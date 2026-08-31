@@ -2,7 +2,7 @@
 
 Painel Node.js para administrar scripts, loader, keys, logs, bans e produtos.
 
-O painel usa apenas as rotas internas `/api/...`. O token da API de arquivos fica no backend, em `config.json`, e nunca deve ser colocado no Roblox ou no frontend.
+O painel usa apenas as rotas internas `/api/...`. As credenciais ficam exclusivamente nas variáveis de ambiente do servidor e nunca devem ser colocadas no Roblox ou no frontend.
 
 ## Deploy
 

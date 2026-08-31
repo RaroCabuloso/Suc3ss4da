@@ -587,13 +587,11 @@ $$('#nav a').forEach(a => a.addEventListener('click', () => {
 let overviewChart = null;
 async function loadStatus() {
   try {
-    const [sres, pres, kres, bres] = await Promise.all([
-      apiFetch('/api/stats'), apiFetch('/api/produtos'), apiFetch('/api/keys'), apiFetch('/api/admin/banlist')
-    ]);
-    const stats    = sres.ok ? await sres.json() : {};
-    const produtos = pres.ok ? await pres.json() : [];
-    const keysRaw  = kres.ok ? await kres.json() : {};
-    const bans     = bres.ok ? await bres.json() : [];
+  const sres = await apiFetch('/api/stats');
+  const stats = sres.ok ? await sres.json() : {};
+  const produtos = stats.produtos_list || [];
+  const keysRaw = stats.keys_data || {};
+  const bans = stats.bans || [];
 
     const keyArr   = typeof keysRaw==='object'&&!Array.isArray(keysRaw) ? Object.values(keysRaw) : (Array.isArray(keysRaw)?keysRaw:[]);
     const keyCount = keyArr.filter(k=>k.active).length;

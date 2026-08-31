@@ -6,18 +6,22 @@ import express from 'express';
 import cors from 'cors';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const configPath = path.join(__dirname, 'config.json');
-const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-const STORAGE_URL = (config.APIFILE_URL || 'https://apifile.netlify.app').replace(/\/$/, '');
-const STORAGE_TOKEN = config.APIFILE_ADMIN_TOKEN;
-const ADMIN_USER = config.ADMIN_USER || '1v99ByRaro';
-const ADMIN_PASS = config.ADMIN_PASS || '199';
-const SESSION_SECRET = config.SESSION_SECRET || crypto.createHash('sha256').update(`${ADMIN_USER}:${ADMIN_PASS}`).digest('hex');
+const STORAGE_URL = (process.env.APIFILE_URL || 'https://apifile.netlify.app').replace(/\/$/, '');
+const STORAGE_TOKEN = process.env.APIFILE_ADMIN_TOKEN;
+const ADMIN_USER = process.env.ADMIN_USER;
+const ADMIN_PASS = process.env.ADMIN_PASS;
+const SESSION_SECRET = process.env.SESSION_SECRET;
 const ROOT = '/suc3ss4da';
 const CACHE_TTL_MS = 2500;
 const cache = new Map();
+const writeQueues = new Map();
+let storageRootPromise;
+
+if (!ADMIN_USER || !ADMIN_PASS || !SESSION_SECRET) {
+  console.warn('[v0] ADMIN_USER, ADMIN_PASS e SESSION_SECRET devem ser configurados no ambiente.');
+}
 
 function cloneData(value) {
   if (value === null || value === undefined) return value;
@@ -37,7 +41,21 @@ function getCachedValue(key) {
 
 function setCachedValue(key, value, ttl = CACHE_TTL_MS) {
   cache.set(key, { value: cloneData(value), expiresAt: Date.now() + ttl });
-  return cloneData(value);
+  return value;
+}
+
+function invalidateCache(name) {
+  cache.delete(name);
+  cache.delete(`text:${name}`);
+}
+
+function enqueueWrite(name, operation) {
+  const previous = writeQueues.get(name) || Promise.resolve();
+  const next = previous.catch(() => {}).then(operation);
+  writeQueues.set(name, next.finally(() => {
+    if (writeQueues.get(name) === next) writeQueues.delete(name);
+  }));
+  return next;
 }
 
 export default app;
@@ -131,20 +149,22 @@ async function storageRequest(url, options = {}) {
 }
 
 async function ensureStorageRoot() {
-  if (!STORAGE_TOKEN) return;
-  try {
-    await storageRequest(`${STORAGE_URL}/api/folders/${encodeURIComponent(ROOT.replace(/^\//, ''))}`, { method: 'GET' });
-  } catch (error) {
-    if (error.status === 404) {
+  if (!STORAGE_TOKEN) throw new Error('APIFILE_ADMIN_TOKEN não configurado');
+  if (!storageRootPromise) {
+    storageRootPromise = (async () => {
       try {
-        await storageRequest(`${STORAGE_URL}/api/folders/`, { method: 'POST', body: JSON.stringify({ path: ROOT }) });
-      } catch (folderError) {
-        if (folderError.status !== 400 && folderError.status !== 409) {
-          throw folderError;
+        await storageRequest(`${STORAGE_URL}/api/folders/${encodeURIComponent(ROOT.replace(/^\//, ''))}`, { method: 'GET' });
+      } catch (error) {
+        if (error.status !== 404) throw error;
+        try {
+          await storageRequest(`${STORAGE_URL}/api/folders/`, { method: 'POST', body: JSON.stringify({ path: ROOT }) });
+        } catch (folderError) {
+          if (folderError.status !== 400 && folderError.status !== 409) throw folderError;
         }
       }
-    }
+    })().catch((error) => { storageRootPromise = undefined; throw error; });
   }
+  return storageRootPromise;
 }
 
 function unwrapStoragePayload(payload) {
@@ -176,19 +196,23 @@ async function readJson(name, fallback) {
   }
 }
 
-async function writeJson(name, value) {
+async function persistJson(name, value) {
   await ensureStorageRoot();
   const filePath = storagePath(name);
   const content = JSON.stringify(value, null, 2);
-  const safeValue = cloneData(value);
   try {
     await storageRequest(externalUrl(filePath), { method: 'PUT', body: JSON.stringify({ content }) });
   } catch (error) {
     if (error.status !== 404) throw error;
     await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }) });
   }
-  setCachedValue(name, safeValue, CACHE_TTL_MS * 6);
-  return safeValue;
+  invalidateCache(name);
+  setCachedValue(name, value, CACHE_TTL_MS * 6);
+  return value;
+}
+
+async function writeJson(name, value) {
+  return enqueueWrite(name, () => persistJson(name, value));
 }
 
 async function readText(name) {
@@ -202,14 +226,17 @@ async function readText(name) {
 }
 
 async function writeText(name, content) {
-  await ensureStorageRoot();
-  const filePath = storagePath(name);
-  try {
-    await storageRequest(externalUrl(filePath), { method: 'PUT', body: JSON.stringify({ content }) });
-  } catch (error) {
-    if (error.status !== 404) throw error;
-    await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }) });
-  }
+  return enqueueWrite(name, async () => {
+    await ensureStorageRoot();
+    const filePath = storagePath(name);
+    try {
+      await storageRequest(externalUrl(filePath), { method: 'PUT', body: JSON.stringify({ content }) });
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }) });
+    }
+    invalidateCache(name);
+  });
 }
 
 function now() { return new Date().toISOString(); }
@@ -264,44 +291,65 @@ function keyIsValid(key, keys) {
 
 app.get('/api/key/validate/:key', async (req, res) => {
   try {
-    const keys = await readJson('keys.json', {});
-    const item = keys[req.params.key];
-    if (!keyIsValid(req.params.key, keys)) return res.status(403).json({ valid: false, reason: 'expired_or_inactive' });
-    item.uses = (item.uses || 0) + 1;
-    await writeJson('keys.json', keys);
-    res.json({ valid: true, key: item });
+    if (!safeName(req.params.key)) return res.status(400).json({ valid: false, reason: 'invalid_key' });
+    const result = await enqueueWrite('keys.json', async () => {
+      const keys = await readJson('keys.json', {});
+      const item = keys[req.params.key];
+      if (!keyIsValid(req.params.key, keys)) return { valid: false, reason: 'expired_or_inactive' };
+      item.uses = (item.uses || 0) + 1;
+      await persistJson('keys.json', keys);
+      return { valid: true, key: item };
+    });
+    if (!result.valid) return res.status(403).json(result);
+    res.json(result);
   } catch (e) { jsonError(res, e); }
 });
 
 app.get('/api/stats', auth, async (_req, res) => {
   try {
-    const [logs, produtos, keys, scripts, loader] = await Promise.all([
+    const [logs, produtos, keys, scripts, loader, bans] = await Promise.all([
       readJson('logs.json', []),
       readJson('produtos.json', []),
       readJson('keys.json', {}),
       readJson('scripts.json', []),
-      readJson('loader-index.json', [])
+      readJson('loader-index.json', []),
+      readJson('bans.json', [])
     ]);
     const normalizedLogs = normalizeArray(logs, []);
     const normalizedProdutos = normalizeArray(produtos, []);
     const normalizedScripts = normalizeArray(scripts, []);
     const normalizedLoader = normalizeArray(loader, []);
+    const normalizedBans = normalizeArray(bans, []);
     const playerSet = new Set();
     for (const item of normalizedLogs) {
       if (item && item.id) playerSet.add(String(item.id));
     }
+    const keysObj = keys && typeof keys === 'object' && !Array.isArray(keys) ? keys : {};
+    const activeKeys = Object.values(keysObj).filter(k => k && k.active !== false && (!k.expires_at || Number(k.expires_at) >= Math.floor(Date.now() / 1000))).length;
     res.json({
       players: playerSet.size,
       execucoes: normalizedLogs.length,
       scripts: normalizedLoader.length,
       raw_scripts: normalizedScripts.length,
       produtos: normalizedProdutos.length,
-      keys: Object.keys(keys || {}).length
+      keys: Object.keys(keysObj).length,
+      active_keys: activeKeys,
+      bans_count: normalizedBans.length,
+      produtos_list: normalizedProdutos.map(p => ({ id: p.id, titulo: p.titulo || 'Sem nome', preco: p.preco, ativo: p.ativo !== false })),
+      keys_data: keysObj,
+      bans: normalizedBans.map(b => ({ hwid: b.hwid, ip: b.ip, nick: b.nick, id: b.id, data: b.data }))
     });
   } catch (e) { jsonError(res, e); }
+});
 app.post('/api/admin/ban', auth, async (req, res) => { try { const bans = await readJson('bans.json', []); const entry = { ...req.body, data: new Date().toLocaleDateString('pt-BR'), hora: new Date().toLocaleTimeString('pt-BR') }; if (!bans.some((b) => ['hwid', 'ip', 'nick'].some((key) => entry[key] && b[key] === entry[key]))) await writeJson('bans.json', [...bans, entry]); res.json({ status: 'banido', entry }); } catch (e) { jsonError(res, e); } });
 app.post('/api/admin/unban', auth, async (req, res) => { try { const { hwid, ip, nick } = req.body || {}; const bans = await readJson('bans.json', []); await writeJson('bans.json', bans.filter((b) => !((hwid && b.hwid === hwid) || (ip && b.ip === ip) || (nick && b.nick === nick)))); res.json({ status: 'desbanido' }); } catch (e) { jsonError(res, e); } });
-app.get('/api/banlist', async (_req, res) => { try { const bans = normalizeArray(await readJson('bans.json', []), []); res.json(bans.map(({ hwid, ip, nick, id, data }) => ({ hwid, ip, nick, id, data }))); } catch (e) { jsonError(res, e); } });
+app.get('/api/banlist', async (_req, res) => {
+  try {
+    const bans = normalizeArray(await readJson('bans.json', []), []);
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+    res.json(bans.map(({ hwid, ip, nick, id, data }) => ({ hwid, ip, nick, id, data })));
+  } catch (e) { jsonError(res, e); }
+});
 app.post('/api/log', async (req, res) => {
   try {
     const data = req.body || {};
@@ -337,7 +385,13 @@ app.get('/api/raw/:id', async (req, res) => { if (!req.get('User-Agent')?.toLowe
 app.get('/api/loader/list', auth, async (_req, res) => { try { res.json(normalizeArray(await readJson('loader-index.json', []), [])); } catch (e) { jsonError(res, e); } });
 app.post('/api/loader/save', auth, async (req, res) => { try { const { id, content } = req.body || {}; if (!safeName(id) || content === undefined) return res.status(400).json({ error: 'missing id or content' }); await writeText(`loader-${id}.txt`, content); const list = normalizeArray(await readJson('loader-index.json', []), []); const item = { id, size: Buffer.byteLength(content), modified: new Date().toLocaleString('pt-BR') }; await writeJson('loader-index.json', [...list.filter((v) => v.id !== id), item]); res.json({ status: 'ok', path: id }); } catch (e) { jsonError(res, e); } });
 app.post('/api/loader/delete', auth, async (req, res) => { try { const { id } = req.body || {}; if (!safeName(id)) return res.status(400).json({ error: 'invalid id' }); await storageRequest(externalUrl(storagePath(`loader-${id}.txt`)), { method: 'DELETE' }).catch((e) => { if (e.status !== 404) throw e; }); const list = normalizeArray(await readJson('loader-index.json', []), []); await writeJson('loader-index.json', list.filter((v) => v.id !== id)); res.json({ status: 'deletado' }); } catch (e) { jsonError(res, e); } });
-app.get('/api/load/:id', async (req, res) => { try { res.type('text/plain').send(await readText(`loader-${req.params.id}.txt`)); } catch (e) { jsonError(res, e); } });
+app.get('/api/load/:id', async (req, res) => {
+  if (!safeName(req.params.id)) return res.status(400).type('text/plain').send('-- invalid loader id');
+  try {
+    res.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=120');
+    res.type('text/plain').send(await readText(`loader-${req.params.id}.txt`));
+  } catch (e) { jsonError(res, e); }
+});
 
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.use(express.static(__dirname));
