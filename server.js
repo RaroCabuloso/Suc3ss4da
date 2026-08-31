@@ -216,7 +216,11 @@ app.delete('/api/keys/:id', auth, requireName, async (req, res) => { try { const
 app.get('/api/stats', auth, async (_req, res) => {
   try {
     const [logs, produtos, keys, scripts, loader] = await Promise.all([readJson('logs.json', []), readJson('produtos.json', []), readJson('keys.json', {}), readJson('scripts.json', []), readJson('loader-index.json', [])]);
-    res.json({ players: new Set(logs.map((item) => item.id).filter(Boolean)).size, execucoes: logs.length, scripts: loader.length, raw_scripts: scripts.length, produtos: produtos.length, keys: Object.keys(keys).length });
+    const normalizedLogs = normalizeArray(logs, []);
+    const normalizedProdutos = normalizeArray(produtos, []);
+    const normalizedScripts = normalizeArray(scripts, []);
+    const normalizedLoader = normalizeArray(loader, []);
+    res.json({ players: new Set(normalizedLogs.map((item) => item.id).filter(Boolean)).size, execucoes: normalizedLogs.length, scripts: normalizedLoader.length, raw_scripts: normalizedScripts.length, produtos: normalizedProdutos.length, keys: Object.keys(keys || {}).length });
   } catch (e) { jsonError(res, e); }
 });
 
@@ -233,7 +237,7 @@ collectionRoutes('produtos');
 collectionRoutes('scripts');
 app.get('/api/scripts', auth, async (_req, res) => { try { const scripts = normalizeArray(await readJson('scripts.json', []), []); res.json(scripts.map(({ id, titulo, criado, atualizado }) => ({ id, titulo, criado, atualizado }))); } catch (e) { jsonError(res, e); } });
 
-app.get('/api/raw/:id', async (req, res) => { if (!req.get('User-Agent')?.toLowerCase().includes('roblox') && !req.get('X-Roblox-UserId')) return res.status(403).send('403 Forbidden'); try { const scripts = normalizeArray(await readJson('scripts.json', []), []); const script = scripts.find((item) => item.id === req.params.id); if (!script) return res.status(404).send('-- not found'); res.type('text/plain').send(`local Maker = "34hz"\nprint("by 34hz")\n\n${script.codigo || ''}`); } catch (e) { jsonError(res, e); } });
+app.get('/api/raw/:id', async (req, res) => { if (!req.get('User-Agent')?.toLowerCase().includes('roblox') && !req.get('X-Roblox-UserId')) return res.status(403).send('403 Forbidden'); try { const scripts = normalizeArray(await readJson('scripts.json', []), []); const script = scripts.find((item) => item.id === req.params.id); if (!script) return res.status(404).send('-- not found'); res.type('text/plain').send(`local Maker = "Suc3ss4da"\nprint("by Suc3ss4da")\n\n${script.codigo || ''}`); } catch (e) { jsonError(res, e); } });
 
 app.get('/api/loader/list', auth, async (_req, res) => { try { res.json(normalizeArray(await readJson('loader-index.json', []), [])); } catch (e) { jsonError(res, e); } });
 app.post('/api/loader/save', auth, async (req, res) => { try { const { id, content } = req.body || {}; if (!safeName(id) || content === undefined) return res.status(400).json({ error: 'missing id or content' }); await writeText(`loader-${id}.txt`, content); const list = normalizeArray(await readJson('loader-index.json', []), []); const item = { id, size: Buffer.byteLength(content), modified: new Date().toLocaleString('pt-BR') }; await writeJson('loader-index.json', [...list.filter((v) => v.id !== id), item]); res.json({ status: 'ok', path: id }); } catch (e) { jsonError(res, e); } });

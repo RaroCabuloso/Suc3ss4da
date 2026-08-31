@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>34hz • Premium Panel</title>
+<title>Suc3ss4da • Admin Panel</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/@phosphor-icons/web"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -261,13 +261,13 @@
 <div id="app" class="app">
   <header class="mobile-header" id="mobileHeader" style="display:none">
     <button class="menu-toggle" onclick="toggleSidebar()"><i class="ph ph-list"></i></button>
-    <div class="logo" style="padding:0; border:none; margin:0">34<span>hz</span></div>
+    <div class="logo" style="padding:0; border:none; margin:0">Suc3ss4da</div>
     <div style="width:44px"></div>
   </header>
   <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
 
   <aside class="sidebar" id="sidebar">
-    <div class="logo">34<span>hz</span></div>
+    <div class="logo">Suc3ss4da</div>
     <nav class="nav" id="nav">
       <a href="#status" data-page="status" class="active"><i class="ph ph-chart-bar"></i> Status</a>
       <a href="#logs" data-page="logs"><i class="ph ph-scroll"></i> Logs</a>
@@ -300,7 +300,7 @@
       <section id="loginPage" style="display:none">
         <div class="card fade-in" style="max-width:400px;margin:100px auto; text-align: center;">
           <div style="text-align:center;margin-bottom:24px">
-            <h2 style="font-size:2rem; letter-spacing: -1px; margin-bottom: 8px;">34hz</h2>
+            <h2 style="font-size:2rem; letter-spacing: -1px; margin-bottom: 8px;">Suc3ss4da</h2>
             <div style="color:var(--muted);font-size:0.83rem;margin-top:8px">Acesso restrito a administradores</div>
           </div>
           <div class="form-row"><input id="loginUser" placeholder="Usuário" style="width:100%"></div>
@@ -492,6 +492,7 @@ async function doLogin(user, pass) {
     localStorage.setItem(TOKEN_KEY, data.token);
     localStorage.setItem(USER_KEY,  data.user || user);
     localStorage.setItem('admin_verified', 'true');
+    localStorage.setItem('admin_verified_time', Date.now().toString());
     btn.innerHTML = '<i class="ph ph-check"></i> Autorizado!';
     setTimeout(() => { btn.disabled = false; btn.innerHTML = '<i class="ph ph-sign-in"></i> Entrar'; initApp(); }, 900);
   } catch (e) {
@@ -513,7 +514,7 @@ async function verifyToken() {
 
 function logout() {
   apiFetch('/api/logout', { method:'POST' }).catch(()=>{});
-  ['admin_token','admin_user','admin_verified'].forEach(k => localStorage.removeItem(k));
+  ['admin_token','admin_user','admin_verified','admin_verified_time'].forEach(k => localStorage.removeItem(k));
   location.reload();
 }
 
@@ -1115,7 +1116,7 @@ function newRawScriptModal() {
     <div class="modal-header"><div class="modal-title"><i class="ph ph-code-block"></i> Novo Script Raw</div><button class="modal-close" onclick="closeModal()">&times;</button></div>
     <div style="background:rgba(255,31,31,0.06);border:1px solid rgba(255,31,31,0.2);border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:0.8rem;color:var(--muted)">
       <i class="ph ph-shield-check" style="color:var(--accent)"></i>
-      Entregue <b>apenas para Roblox</b>. A marca d'água <code>local Maker = "34hz"</code> é injetada automaticamente no topo.
+      Entregue <b>apenas para Roblox</b>. A marca d'água <code>local Maker = "Suc3ss4da"</code> é injetada automaticamente no topo.
     </div>
     <div class="form-row" style="flex-direction:column"><label class="form-label">Título do Script *</label><input id="rs_titulo" placeholder="Ex: Aimbot Universal v2"></div>
     <div class="form-row" style="flex-direction:column"><label class="form-label">Código Lua *</label><textarea id="rs_codigo" placeholder="-- Seu código aqui..." style="min-height:380px;font-family:monospace;font-size:0.83rem"></textarea></div>
@@ -1230,7 +1231,7 @@ loadSettings();
   }
 })();
 
-console.log('%c 34hz Admin Panel ', 'background:#000;color:#fff;font-size:16px;font-weight:bold;padding:8px 16px;border-radius:4px;');
+console.log('%c Suc3ss4da Admin Panel ', 'background:#000;color:#fff;font-size:16px;font-weight:bold;padding:8px 16px;border-radius:4px;');
 </script>
 </body>
 </html>
