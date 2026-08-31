@@ -16,6 +16,8 @@ const ROOT = '/suc3ss4da';
 const sessions = new Set();
 const cache = new Map();
 
+export default app;
+
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
@@ -160,5 +162,12 @@ app.post('/api/loader/save', auth, async (req, res) => { try { const { id, conte
 app.post('/api/loader/delete', auth, async (req, res) => { try { const { id } = req.body || {}; if (!safeName(id)) return res.status(400).json({ error: 'invalid id' }); await storageRequest(externalUrl(storagePath(`loader-${id}.txt`)), { method: 'DELETE' }).catch((e) => { if (e.status !== 404) throw e; }); await writeJson('loader-index.json', (await readJson('loader-index.json', [])).filter((v) => v.id !== id)); res.json({ status: 'deletado' }); } catch (e) { jsonError(res, e); } });
 app.get('/api/load/:id', async (req, res) => { try { res.type('text/plain').send(await readText(`loader-${req.params.id}.txt`)); } catch (e) { jsonError(res, e); } });
 
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.use(express.static(__dirname));
-app.listen(PORT, () => console.log(`Painel Node ativo em http://localhost:${PORT}`));
+
+export function startServer(port = PORT) {
+  return app.listen(port, () => console.log(`Painel Node ativo em http://localhost:${port}`));
+}
+
+const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isDirectRun) startServer(PORT);
