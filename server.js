@@ -14,8 +14,8 @@ const STORAGE_URL = (config.APIFILE_URL || 'https://apifile.netlify.app').replac
 const STORAGE_TOKEN = config.APIFILE_ADMIN_TOKEN;
 const ADMIN_USER = config.ADMIN_USER || '1v99ByRaro';
 const ADMIN_PASS = config.ADMIN_PASS || '199';
+const SESSION_SECRET = config.SESSION_SECRET || crypto.createHash('sha256').update(`${ADMIN_USER}:${ADMIN_PASS}`).digest('hex');
 const ROOT = '/suc3ss4da';
-const sessions = new Set();
 const cache = new Map();
 
 export default app;
@@ -25,8 +25,23 @@ app.use(express.json({ limit: '5mb' }));
 
 function auth(req, res, next) {
   const token = req.get('Authorization');
-  if (!token || !sessions.has(token)) return res.status(403).json({ error: 'admin apenas' });
+  if (!isSessionTokenValid(token)) return res.status(403).json({ error: 'admin apenas' });
   next();
+}
+
+function createSessionToken() {
+  const payload = Buffer.from(JSON.stringify({ sub: 'admin', exp: Date.now() + 30 * 24 * 60 * 60 * 1000 })).toString('base64url');
+  const signature = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function isSessionTokenValid(value) {
+  if (!value || typeof value !== 'string') return false;
+  const [payload, signature] = value.split('.');
+  if (!payload || !signature) return false;
+  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
+  try { return JSON.parse(Buffer.from(payload, 'base64url').toString()).exp > Date.now(); } catch { return false; }
 }
 
 function safeName(value) {
@@ -176,11 +191,10 @@ app.get('/api/status', (_req, res) => res.json({ status: 'online', time: now() }
 app.post('/api/admin/login', (req, res) => {
   const { user = '', password = '' } = req.body || {};
   if (user.toLowerCase() !== ADMIN_USER.toLowerCase() || password !== ADMIN_PASS) return res.status(401).json({ error: 'Credenciais admin inválidas', admin: false });
-  const session = token(); sessions.add(session);
-  res.json({ token: session, user: 'admin', admin: true });
+  res.json({ token: createSessionToken(), user: 'admin', admin: true });
 });
 app.get('/api/admin/verify', auth, (_req, res) => res.json({ admin: true, valid: true }));
-app.post('/api/logout', (req, res) => { sessions.delete(req.get('Authorization')); res.json({ success: true }); });
+app.post('/api/logout', (_req, res) => res.json({ success: true }));
 
 function normalizeArray(value, fallback = []) {
   if (Array.isArray(value)) return value;
@@ -213,6 +227,22 @@ app.put('/api/keys/:id', auth, requireName, async (req, res) => { try { const ke
 app.post('/api/keys/:id/addtime', auth, requireName, async (req, res) => { try { const keys = await readJson('keys.json', {}); const key = keys[req.params.id]; const seconds = durationSeconds(req.body?.add); if (!key || seconds === null) return res.status(404).json({ error: 'key ou duração inválida' }); key.expires_at = Math.max(key.expires_at || Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000)) + seconds; key.duration_seconds = key.expires_at - Math.floor(Date.now() / 1000); await writeJson('keys.json', keys); res.json({ status: 'atualizado', key }); } catch (e) { jsonError(res, e); } });
 app.delete('/api/keys/:id', auth, requireName, async (req, res) => { try { const keys = await readJson('keys.json', {}); if (!keys[req.params.id]) return res.status(404).json({ error: 'key não encontrada' }); delete keys[req.params.id]; await writeJson('keys.json', keys); res.json({ status: 'deletada' }); } catch (e) { jsonError(res, e); } });
 
+function keyIsValid(key, keys) {
+  const item = keys?.[key];
+  return Boolean(item && item.active !== false && (!item.expires_at || Number(item.expires_at) >= Math.floor(Date.now() / 1000)));
+}
+
+app.get('/api/key/validate/:key', async (req, res) => {
+  try {
+    const keys = await readJson('keys.json', {});
+    const item = keys[req.params.key];
+    if (!keyIsValid(req.params.key, keys)) return res.status(403).json({ valid: false, reason: 'expired_or_inactive' });
+    item.uses = (item.uses || 0) + 1;
+    await writeJson('keys.json', keys);
+    res.json({ valid: true, key: item });
+  } catch (e) { jsonError(res, e); }
+});
+
 app.get('/api/stats', auth, async (_req, res) => {
   try {
     const [logs, produtos, keys, scripts, loader] = await Promise.all([readJson('logs.json', []), readJson('produtos.json', []), readJson('keys.json', {}), readJson('scripts.json', []), readJson('loader-index.json', [])]);
@@ -226,6 +256,21 @@ app.get('/api/stats', auth, async (_req, res) => {
 
 app.post('/api/admin/ban', auth, async (req, res) => { try { const bans = await readJson('bans.json', []); const entry = { ...req.body, data: new Date().toLocaleDateString('pt-BR'), hora: new Date().toLocaleTimeString('pt-BR') }; if (!bans.some((b) => ['hwid', 'ip', 'nick'].some((key) => entry[key] && b[key] === entry[key]))) await writeJson('bans.json', [...bans, entry]); res.json({ status: 'banido', entry }); } catch (e) { jsonError(res, e); } });
 app.post('/api/admin/unban', auth, async (req, res) => { try { const { hwid, ip, nick } = req.body || {}; const bans = await readJson('bans.json', []); await writeJson('bans.json', bans.filter((b) => !((hwid && b.hwid === hwid) || (ip && b.ip === ip) || (nick && b.nick === nick)))); res.json({ status: 'desbanido' }); } catch (e) { jsonError(res, e); } });
+app.get('/api/banlist', async (_req, res) => { try { const bans = normalizeArray(await readJson('bans.json', []), []); res.json(bans.map(({ hwid, ip, nick, id, data }) => ({ hwid, ip, nick, id, data }))); } catch (e) { jsonError(res, e); } });
+app.post('/api/log', async (req, res) => {
+  try {
+    const data = req.body || {};
+    const logs = normalizeArray(await readJson('logs.json', []), []);
+    const bans = normalizeArray(await readJson('bans.json', []), []);
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+    if (bans.some((ban) => (data.hwid && ban.hwid === data.hwid) || (data.nick && ban.nick === data.nick) || (ip && ban.ip === ip))) return res.status(403).json({ status: 'banido' });
+    const key = req.get('X-Loader-Key') || req.query.key;
+    if (key && !keyIsValid(key, await readJson('keys.json', {}))) return res.status(403).json({ error: 'key inválida ou expirada' });
+    logs.push({ ...data, ip, data: new Date().toLocaleDateString('pt-BR'), hora: new Date().toLocaleTimeString('pt-BR'), meta: { key: Boolean(key), user_agent: req.get('User-Agent') } });
+    await writeJson('logs.json', logs.slice(-5000));
+    res.json({ status: 'registrado' });
+  } catch (e) { jsonError(res, e); }
+});
 
 function collectionRoutes(collection, idKey = 'id') {
   app.post(`/api/${collection}`, auth, async (req, res) => { try { const list = normalizeArray(await readJson(`${collection}.json`, []), []); const item = { ...req.body, [idKey]: req.body[idKey] || crypto.randomUUID().replaceAll('-', ''), criado: now(), atualizado: now() }; await writeJson(`${collection}.json`, [...list, item]); res.json({ status: 'criado', [collection === 'scripts' ? 'script' : 'produto']: item }); } catch (e) { jsonError(res, e); } });
