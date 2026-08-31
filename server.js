@@ -74,6 +74,7 @@ function auth(req, res, next) {
 }
 
 function createSessionToken() {
+  if (!SESSION_SECRET) throw new Error('SESSION_SECRET não configurado');
   const payload = Buffer.from(JSON.stringify({ sub: 'admin', exp: Date.now() + 30 * 24 * 60 * 60 * 1000 })).toString('base64url');
   const signature = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
   return `${payload}.${signature}`;
@@ -247,7 +248,8 @@ function requireName(req, res, next) { if (!safeName(req.params.id)) return res.
 app.get('/api/status', (_req, res) => res.json({ status: 'online', time: now() }));
 app.post('/api/admin/login', (req, res) => {
   const { user = '', password = '' } = req.body || {};
-  if (user.toLowerCase() !== ADMIN_USER.toLowerCase() || password !== ADMIN_PASS) return res.status(401).json({ error: 'Credenciais admin inválidas', admin: false });
+  if (!ADMIN_USER || !ADMIN_PASS || !SESSION_SECRET) return res.status(503).json({ error: 'Autenticação não configurada', admin: false });
+  if (typeof user !== 'string' || typeof password !== 'string' || user.toLowerCase() !== ADMIN_USER.toLowerCase() || password !== ADMIN_PASS) return res.status(401).json({ error: 'Credenciais admin inválidas', admin: false });
   res.json({ token: createSessionToken(), user: 'admin', admin: true });
 });
 app.get('/api/admin/verify', auth, (_req, res) => res.json({ admin: true, valid: true }));
