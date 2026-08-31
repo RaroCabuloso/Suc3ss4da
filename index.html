@@ -446,7 +446,7 @@
 
 <script>
 /* =================== CONFIG =================== */
-let API_BASE = localStorage.getItem('admin_api_base') || window.location.origin;
+const API_BASE = window.location.origin;
 const TOKEN_KEY = 'admin_token';
 const USER_KEY  = 'admin_user';
 
@@ -1200,9 +1200,7 @@ $('#cfgColor').addEventListener('input', e => {
 });
 
 $('#btnSaveCfg').addEventListener('click', () => {
-  const api = $('#cfgApi').value.trim();
   const accent = $('#cfgColor').value;
-  if (api) localStorage.setItem('admin_api_base', api);
   localStorage.setItem('admin_accent', accent);
   location.reload();
 });
