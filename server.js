@@ -1,17 +1,19 @@
-import 'dotenv/config';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cors from 'cors';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const configPath = path.join(__dirname, 'config.json');
+const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-const STORAGE_URL = (process.env.APIFILE_URL || 'https://apifile.netlify.app').replace(/\/$/, '');
-const STORAGE_TOKEN = process.env.APIFILE_ADMIN_TOKEN;
-const ADMIN_USER = process.env.ADMIN_USER || '1v99ByRaro';
-const ADMIN_PASS = process.env.ADMIN_PASS || '199';
+const STORAGE_URL = (config.APIFILE_URL || 'https://apifile.netlify.app').replace(/\/$/, '');
+const STORAGE_TOKEN = config.APIFILE_ADMIN_TOKEN;
+const ADMIN_USER = config.ADMIN_USER || '1v99ByRaro';
+const ADMIN_PASS = config.ADMIN_PASS || '199';
 const ROOT = '/suc3ss4da';
 const sessions = new Set();
 const cache = new Map();
@@ -36,8 +38,38 @@ function storagePath(name) {
   return `${ROOT}/${name}`;
 }
 
+function normalizeStoragePath(filePath) {
+  return String(filePath || '').replace(/^\/+/, '');
+}
+
+function bodyStoragePath(filePath) {
+  const normalized = normalizeStoragePath(filePath);
+  return normalized ? `/${normalized}` : '/';
+}
+
+async function ensureParentFolder(filePath) {
+  const parent = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : ROOT;
+  const parts = parent.split('/').filter(Boolean);
+  let current = '';
+
+  for (const part of parts) {
+    current = `${current}/${part}`;
+    try {
+      await storageRequest(`${STORAGE_URL}/api/folders/`, {
+        method: 'POST',
+        body: JSON.stringify({ path: current })
+      });
+    } catch (error) {
+      if (error.status !== 400 && error.status !== 409 && error.status !== 404) {
+        throw error;
+      }
+    }
+  }
+}
+
 function externalUrl(filePath) {
-  return `${STORAGE_URL}/api/files/${filePath.split('/').map(encodeURIComponent).join('/')}`;
+  const normalized = normalizeStoragePath(filePath);
+  return `${STORAGE_URL}/api/files/${normalized.split('/').map(encodeURIComponent).join('/')}`;
 }
 
 async function storageRequest(url, options = {}) {
@@ -57,6 +89,23 @@ async function storageRequest(url, options = {}) {
   return body;
 }
 
+async function ensureStorageRoot() {
+  if (!STORAGE_TOKEN) return;
+  try {
+    await storageRequest(`${STORAGE_URL}/api/folders/${encodeURIComponent(ROOT.replace(/^\//, ''))}`, { method: 'GET' });
+  } catch (error) {
+    if (error.status === 404) {
+      try {
+        await storageRequest(`${STORAGE_URL}/api/folders/`, { method: 'POST', body: JSON.stringify({ path: ROOT }) });
+      } catch (folderError) {
+        if (folderError.status !== 400 && folderError.status !== 409) {
+          throw folderError;
+        }
+      }
+    }
+  }
+}
+
 async function readJson(name, fallback) {
   if (cache.has(name)) return cache.get(name);
   try {
@@ -72,13 +121,14 @@ async function readJson(name, fallback) {
 }
 
 async function writeJson(name, value) {
+  await ensureStorageRoot();
   const filePath = storagePath(name);
   const content = JSON.stringify(value, null, 2);
   try {
     await storageRequest(externalUrl(filePath), { method: 'PUT', body: JSON.stringify({ content }) });
   } catch (error) {
     if (error.status !== 404) throw error;
-    await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: filePath, content }) });
+    await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }) });
   }
   cache.set(name, value);
   return value;
@@ -90,12 +140,13 @@ async function readText(name) {
 }
 
 async function writeText(name, content) {
+  await ensureStorageRoot();
   const filePath = storagePath(name);
   try {
     await storageRequest(externalUrl(filePath), { method: 'PUT', body: JSON.stringify({ content }) });
   } catch (error) {
     if (error.status !== 404) throw error;
-    await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: filePath, content }) });
+    await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }) });
   }
 }
 
