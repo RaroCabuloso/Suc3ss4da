@@ -106,12 +106,26 @@ async function ensureStorageRoot() {
   }
 }
 
+function unwrapStoragePayload(payload) {
+  if (payload == null) return payload;
+  if (typeof payload === 'string') return payload;
+  if (typeof payload !== 'object') return payload;
+  if (payload.data !== undefined) return unwrapStoragePayload(payload.data);
+  if (payload.content !== undefined) return payload.content;
+  if (payload.items !== undefined) return payload.items;
+  return payload;
+}
+
 async function readJson(name, fallback) {
   if (cache.has(name)) return cache.get(name);
   try {
     const body = await storageRequest(externalUrl(storagePath(name)));
-    const raw = typeof body === 'string' ? body : body?.data ?? body?.content ?? body;
-    const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const payload = unwrapStoragePayload(body);
+    let value = payload;
+    if (typeof value === 'string') {
+      try { value = JSON.parse(value); } catch { value = value; }
+    }
+    if (value === undefined || value === null) value = fallback;
     cache.set(name, value);
     return value;
   } catch (error) {
@@ -136,7 +150,10 @@ async function writeJson(name, value) {
 
 async function readText(name) {
   const body = await storageRequest(externalUrl(storagePath(name)));
-  return typeof body === 'string' ? body : body?.data ?? body?.content ?? '';
+  const payload = unwrapStoragePayload(body);
+  if (typeof payload === 'string') return payload;
+  if (typeof payload === 'object' && payload && payload.content !== undefined) return String(payload.content);
+  return '';
 }
 
 async function writeText(name, content) {
@@ -165,10 +182,20 @@ app.post('/api/admin/login', (req, res) => {
 app.get('/api/admin/verify', auth, (_req, res) => res.json({ admin: true, valid: true }));
 app.post('/api/logout', (req, res) => { sessions.delete(req.get('Authorization')); res.json({ success: true }); });
 
-app.get('/api/logs', auth, async (_req, res) => { try { const logs = await readJson('logs.json', []); res.json({ logs, pagination: { page: 1, limit: logs.length, total: logs.length, pages: 1 } }); } catch (e) { jsonError(res, e); } });
-app.get('/api/admin/banlist', auth, async (_req, res) => { try { res.json(await readJson('bans.json', [])); } catch (e) { jsonError(res, e); } });
-app.get('/api/produtos', auth, async (_req, res) => { try { res.json(await readJson('produtos.json', [])); } catch (e) { jsonError(res, e); } });
-app.get('/api/keys', auth, async (_req, res) => { try { res.json(await readJson('keys.json', {})); } catch (e) { jsonError(res, e); } });
+function normalizeArray(value, fallback = []) {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.items)) return value.items;
+  if (value && typeof value === 'object') {
+    const entries = Object.values(value);
+    return Array.isArray(entries) ? entries : fallback;
+  }
+  return fallback;
+}
+
+app.get('/api/logs', auth, async (_req, res) => { try { const logs = normalizeArray(await readJson('logs.json', []), []); res.json({ logs, pagination: { page: 1, limit: logs.length, total: logs.length, pages: 1 } }); } catch (e) { jsonError(res, e); } });
+app.get('/api/admin/banlist', auth, async (_req, res) => { try { res.json(normalizeArray(await readJson('bans.json', []), [])); } catch (e) { jsonError(res, e); } });
+app.get('/api/produtos', auth, async (_req, res) => { try { res.json(normalizeArray(await readJson('produtos.json', []), [])); } catch (e) { jsonError(res, e); } });
+app.get('/api/keys', auth, async (_req, res) => { try { const keys = await readJson('keys.json', {}); res.json(keys && typeof keys === 'object' && !Array.isArray(keys) ? keys : {}); } catch (e) { jsonError(res, e); } });
 function durationSeconds(value) {
   if (value === undefined || value === null || value === '' || ['0', 'perm', 'permanent', 'infinite', 'indef'].includes(String(value).toLowerCase())) return null;
   if (/^\d+$/.test(String(value))) return Number(value);
@@ -197,20 +224,20 @@ app.post('/api/admin/ban', auth, async (req, res) => { try { const bans = await 
 app.post('/api/admin/unban', auth, async (req, res) => { try { const { hwid, ip, nick } = req.body || {}; const bans = await readJson('bans.json', []); await writeJson('bans.json', bans.filter((b) => !((hwid && b.hwid === hwid) || (ip && b.ip === ip) || (nick && b.nick === nick)))); res.json({ status: 'desbanido' }); } catch (e) { jsonError(res, e); } });
 
 function collectionRoutes(collection, idKey = 'id') {
-  app.post(`/api/${collection}`, auth, async (req, res) => { try { const list = await readJson(`${collection}.json`, []); const item = { ...req.body, [idKey]: req.body[idKey] || crypto.randomUUID().replaceAll('-', ''), criado: now(), atualizado: now() }; await writeJson(`${collection}.json`, [...list, item]); res.json({ status: 'criado', [collection === 'scripts' ? 'script' : 'produto']: item }); } catch (e) { jsonError(res, e); } });
-  app.get(`/api/${collection}/:id`, auth, requireName, async (req, res) => { try { const item = (await readJson(`${collection}.json`, [])).find((value) => String(value[idKey]) === req.params.id); item ? res.json(item) : res.status(404).json({ error: 'não encontrado' }); } catch (e) { jsonError(res, e); } });
-  app.put(`/api/${collection}/:id`, auth, requireName, async (req, res) => { try { const list = await readJson(`${collection}.json`, []); const index = list.findIndex((value) => String(value[idKey]) === req.params.id); if (index < 0) return res.status(404).json({ error: 'não encontrado' }); list[index] = { ...list[index], ...req.body, atualizado: now() }; await writeJson(`${collection}.json`, list); res.json({ status: 'atualizado', [collection === 'scripts' ? 'script' : 'produto']: list[index] }); } catch (e) { jsonError(res, e); } });
-  app.delete(`/api/${collection}/:id`, auth, requireName, async (req, res) => { try { const list = await readJson(`${collection}.json`, []); const next = list.filter((value) => String(value[idKey]) !== req.params.id); if (next.length === list.length) return res.status(404).json({ error: 'não encontrado' }); await writeJson(`${collection}.json`, next); res.json({ status: 'deletado' }); } catch (e) { jsonError(res, e); } });
+  app.post(`/api/${collection}`, auth, async (req, res) => { try { const list = normalizeArray(await readJson(`${collection}.json`, []), []); const item = { ...req.body, [idKey]: req.body[idKey] || crypto.randomUUID().replaceAll('-', ''), criado: now(), atualizado: now() }; await writeJson(`${collection}.json`, [...list, item]); res.json({ status: 'criado', [collection === 'scripts' ? 'script' : 'produto']: item }); } catch (e) { jsonError(res, e); } });
+  app.get(`/api/${collection}/:id`, auth, requireName, async (req, res) => { try { const list = normalizeArray(await readJson(`${collection}.json`, []), []); const item = list.find((value) => String(value[idKey]) === req.params.id); item ? res.json(item) : res.status(404).json({ error: 'não encontrado' }); } catch (e) { jsonError(res, e); } });
+  app.put(`/api/${collection}/:id`, auth, requireName, async (req, res) => { try { const list = normalizeArray(await readJson(`${collection}.json`, []), []); const index = list.findIndex((value) => String(value[idKey]) === req.params.id); if (index < 0) return res.status(404).json({ error: 'não encontrado' }); list[index] = { ...list[index], ...req.body, atualizado: now() }; await writeJson(`${collection}.json`, list); res.json({ status: 'atualizado', [collection === 'scripts' ? 'script' : 'produto']: list[index] }); } catch (e) { jsonError(res, e); } });
+  app.delete(`/api/${collection}/:id`, auth, requireName, async (req, res) => { try { const list = normalizeArray(await readJson(`${collection}.json`, []), []); const next = list.filter((value) => String(value[idKey]) !== req.params.id); if (next.length === list.length) return res.status(404).json({ error: 'não encontrado' }); await writeJson(`${collection}.json`, next); res.json({ status: 'deletado' }); } catch (e) { jsonError(res, e); } });
 }
 collectionRoutes('produtos');
 collectionRoutes('scripts');
-app.get('/api/scripts', auth, async (_req, res) => { try { res.json((await readJson('scripts.json', [])).map(({ id, titulo, criado, atualizado }) => ({ id, titulo, criado, atualizado }))); } catch (e) { jsonError(res, e); } });
+app.get('/api/scripts', auth, async (_req, res) => { try { const scripts = normalizeArray(await readJson('scripts.json', []), []); res.json(scripts.map(({ id, titulo, criado, atualizado }) => ({ id, titulo, criado, atualizado }))); } catch (e) { jsonError(res, e); } });
 
-app.get('/api/raw/:id', async (req, res) => { if (!req.get('User-Agent')?.toLowerCase().includes('roblox') && !req.get('X-Roblox-UserId')) return res.status(403).send('403 Forbidden'); try { const script = (await readJson('scripts.json', [])).find((item) => item.id === req.params.id); if (!script) return res.status(404).send('-- not found'); res.type('text/plain').send(`local Maker = "34hz"\nprint("by 34hz")\n\n${script.codigo || ''}`); } catch (e) { jsonError(res, e); } });
+app.get('/api/raw/:id', async (req, res) => { if (!req.get('User-Agent')?.toLowerCase().includes('roblox') && !req.get('X-Roblox-UserId')) return res.status(403).send('403 Forbidden'); try { const scripts = normalizeArray(await readJson('scripts.json', []), []); const script = scripts.find((item) => item.id === req.params.id); if (!script) return res.status(404).send('-- not found'); res.type('text/plain').send(`local Maker = "34hz"\nprint("by 34hz")\n\n${script.codigo || ''}`); } catch (e) { jsonError(res, e); } });
 
-app.get('/api/loader/list', auth, async (_req, res) => { try { res.json(await readJson('loader-index.json', [])); } catch (e) { jsonError(res, e); } });
-app.post('/api/loader/save', auth, async (req, res) => { try { const { id, content } = req.body || {}; if (!safeName(id) || content === undefined) return res.status(400).json({ error: 'missing id or content' }); await writeText(`loader-${id}.txt`, content); const list = await readJson('loader-index.json', []); const item = { id, size: Buffer.byteLength(content), modified: new Date().toLocaleString('pt-BR') }; await writeJson('loader-index.json', [...list.filter((v) => v.id !== id), item]); res.json({ status: 'ok', path: id }); } catch (e) { jsonError(res, e); } });
-app.post('/api/loader/delete', auth, async (req, res) => { try { const { id } = req.body || {}; if (!safeName(id)) return res.status(400).json({ error: 'invalid id' }); await storageRequest(externalUrl(storagePath(`loader-${id}.txt`)), { method: 'DELETE' }).catch((e) => { if (e.status !== 404) throw e; }); await writeJson('loader-index.json', (await readJson('loader-index.json', [])).filter((v) => v.id !== id)); res.json({ status: 'deletado' }); } catch (e) { jsonError(res, e); } });
+app.get('/api/loader/list', auth, async (_req, res) => { try { res.json(normalizeArray(await readJson('loader-index.json', []), [])); } catch (e) { jsonError(res, e); } });
+app.post('/api/loader/save', auth, async (req, res) => { try { const { id, content } = req.body || {}; if (!safeName(id) || content === undefined) return res.status(400).json({ error: 'missing id or content' }); await writeText(`loader-${id}.txt`, content); const list = normalizeArray(await readJson('loader-index.json', []), []); const item = { id, size: Buffer.byteLength(content), modified: new Date().toLocaleString('pt-BR') }; await writeJson('loader-index.json', [...list.filter((v) => v.id !== id), item]); res.json({ status: 'ok', path: id }); } catch (e) { jsonError(res, e); } });
+app.post('/api/loader/delete', auth, async (req, res) => { try { const { id } = req.body || {}; if (!safeName(id)) return res.status(400).json({ error: 'invalid id' }); await storageRequest(externalUrl(storagePath(`loader-${id}.txt`)), { method: 'DELETE' }).catch((e) => { if (e.status !== 404) throw e; }); const list = normalizeArray(await readJson('loader-index.json', []), []); await writeJson('loader-index.json', list.filter((v) => v.id !== id)); res.json({ status: 'deletado' }); } catch (e) { jsonError(res, e); } });
 app.get('/api/load/:id', async (req, res) => { try { res.type('text/plain').send(await readText(`loader-${req.params.id}.txt`)); } catch (e) { jsonError(res, e); } });
 
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
