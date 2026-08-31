@@ -16,12 +16,38 @@ const ADMIN_USER = config.ADMIN_USER || '1v99ByRaro';
 const ADMIN_PASS = config.ADMIN_PASS || '199';
 const SESSION_SECRET = config.SESSION_SECRET || crypto.createHash('sha256').update(`${ADMIN_USER}:${ADMIN_PASS}`).digest('hex');
 const ROOT = '/suc3ss4da';
+const CACHE_TTL_MS = 2500;
 const cache = new Map();
+
+function cloneData(value) {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+  try { return JSON.parse(JSON.stringify(value)); } catch { return value; }
+}
+
+function getCachedValue(key) {
+  const entry = cache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) {
+    cache.delete(key);
+    return undefined;
+  }
+  return cloneData(entry.value);
+}
+
+function setCachedValue(key, value, ttl = CACHE_TTL_MS) {
+  cache.set(key, { value: cloneData(value), expiresAt: Date.now() + ttl });
+  return cloneData(value);
+}
 
 export default app;
 
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
+app.use((req, res, next) => {
+  res.setHeader('X-Backend', 'Suc3ss4da');
+  next();
+});
 
 function auth(req, res, next) {
   const token = req.get('Authorization');
@@ -132,7 +158,8 @@ function unwrapStoragePayload(payload) {
 }
 
 async function readJson(name, fallback) {
-  if (cache.has(name)) return cache.get(name);
+  const cached = getCachedValue(name);
+  if (cached !== undefined) return cached;
   try {
     const body = await storageRequest(externalUrl(storagePath(name)));
     const payload = unwrapStoragePayload(body);
@@ -141,10 +168,10 @@ async function readJson(name, fallback) {
       try { value = JSON.parse(value); } catch { value = value; }
     }
     if (value === undefined || value === null) value = fallback;
-    cache.set(name, value);
-    return value;
+    setCachedValue(name, value, CACHE_TTL_MS * 6);
+    return cloneData(value);
   } catch (error) {
-    if (error.status === 404) return fallback;
+    if (error.status === 404) return cloneData(fallback);
     throw error;
   }
 }
@@ -153,22 +180,25 @@ async function writeJson(name, value) {
   await ensureStorageRoot();
   const filePath = storagePath(name);
   const content = JSON.stringify(value, null, 2);
+  const safeValue = cloneData(value);
   try {
     await storageRequest(externalUrl(filePath), { method: 'PUT', body: JSON.stringify({ content }) });
   } catch (error) {
     if (error.status !== 404) throw error;
     await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }) });
   }
-  cache.set(name, value);
-  return value;
+  setCachedValue(name, safeValue, CACHE_TTL_MS * 6);
+  return safeValue;
 }
 
 async function readText(name) {
+  const cachedText = cache.get(`text:${name}`);
+  if (cachedText && Date.now() < cachedText.expiresAt) return cachedText.value;
   const body = await storageRequest(externalUrl(storagePath(name)));
   const payload = unwrapStoragePayload(body);
-  if (typeof payload === 'string') return payload;
-  if (typeof payload === 'object' && payload && payload.content !== undefined) return String(payload.content);
-  return '';
+  const text = typeof payload === 'string' ? payload : (payload && typeof payload === 'object' && payload.content !== undefined ? String(payload.content) : '');
+  cache.set(`text:${name}`, { value: text, expiresAt: Date.now() + CACHE_TTL_MS * 4 });
+  return text;
 }
 
 async function writeText(name, content) {
@@ -206,9 +236,9 @@ function normalizeArray(value, fallback = []) {
   return fallback;
 }
 
-app.get('/api/logs', auth, async (_req, res) => { try { const logs = normalizeArray(await readJson('logs.json', []), []); res.json({ logs, pagination: { page: 1, limit: logs.length, total: logs.length, pages: 1 } }); } catch (e) { jsonError(res, e); } });
-app.get('/api/admin/banlist', auth, async (_req, res) => { try { res.json(normalizeArray(await readJson('bans.json', []), [])); } catch (e) { jsonError(res, e); } });
-app.get('/api/produtos', auth, async (_req, res) => { try { res.json(normalizeArray(await readJson('produtos.json', []), [])); } catch (e) { jsonError(res, e); } });
+app.get('/api/logs', auth, async (_req, res) => { try { const logs = normalizeArray(await readJson('logs.json', []), []); res.json({ logs: logs.slice(-5000), pagination: { page: 1, limit: Math.min(logs.length, 5000), total: logs.length, pages: 1 } }); } catch (e) { jsonError(res, e); } });
+app.get('/api/admin/banlist', auth, async (_req, res) => { try { const bans = normalizeArray(await readJson('bans.json', []), []); res.json(bans); } catch (e) { jsonError(res, e); } });
+app.get('/api/produtos', auth, async (_req, res) => { try { const produtos = normalizeArray(await readJson('produtos.json', []), []); res.json(produtos); } catch (e) { jsonError(res, e); } });
 app.get('/api/keys', auth, async (_req, res) => { try { const keys = await readJson('keys.json', {}); res.json(keys && typeof keys === 'object' && !Array.isArray(keys) ? keys : {}); } catch (e) { jsonError(res, e); } });
 function durationSeconds(value) {
   if (value === undefined || value === null || value === '' || ['0', 'perm', 'permanent', 'infinite', 'indef'].includes(String(value).toLowerCase())) return null;
@@ -245,29 +275,49 @@ app.get('/api/key/validate/:key', async (req, res) => {
 
 app.get('/api/stats', auth, async (_req, res) => {
   try {
-    const [logs, produtos, keys, scripts, loader] = await Promise.all([readJson('logs.json', []), readJson('produtos.json', []), readJson('keys.json', {}), readJson('scripts.json', []), readJson('loader-index.json', [])]);
+    const [logs, produtos, keys, scripts, loader] = await Promise.all([
+      readJson('logs.json', []),
+      readJson('produtos.json', []),
+      readJson('keys.json', {}),
+      readJson('scripts.json', []),
+      readJson('loader-index.json', [])
+    ]);
     const normalizedLogs = normalizeArray(logs, []);
     const normalizedProdutos = normalizeArray(produtos, []);
     const normalizedScripts = normalizeArray(scripts, []);
     const normalizedLoader = normalizeArray(loader, []);
-    res.json({ players: new Set(normalizedLogs.map((item) => item.id).filter(Boolean)).size, execucoes: normalizedLogs.length, scripts: normalizedLoader.length, raw_scripts: normalizedScripts.length, produtos: normalizedProdutos.length, keys: Object.keys(keys || {}).length });
+    const playerSet = new Set();
+    for (const item of normalizedLogs) {
+      if (item && item.id) playerSet.add(String(item.id));
+    }
+    res.json({
+      players: playerSet.size,
+      execucoes: normalizedLogs.length,
+      scripts: normalizedLoader.length,
+      raw_scripts: normalizedScripts.length,
+      produtos: normalizedProdutos.length,
+      keys: Object.keys(keys || {}).length
+    });
   } catch (e) { jsonError(res, e); }
-});
-
 app.post('/api/admin/ban', auth, async (req, res) => { try { const bans = await readJson('bans.json', []); const entry = { ...req.body, data: new Date().toLocaleDateString('pt-BR'), hora: new Date().toLocaleTimeString('pt-BR') }; if (!bans.some((b) => ['hwid', 'ip', 'nick'].some((key) => entry[key] && b[key] === entry[key]))) await writeJson('bans.json', [...bans, entry]); res.json({ status: 'banido', entry }); } catch (e) { jsonError(res, e); } });
 app.post('/api/admin/unban', auth, async (req, res) => { try { const { hwid, ip, nick } = req.body || {}; const bans = await readJson('bans.json', []); await writeJson('bans.json', bans.filter((b) => !((hwid && b.hwid === hwid) || (ip && b.ip === ip) || (nick && b.nick === nick)))); res.json({ status: 'desbanido' }); } catch (e) { jsonError(res, e); } });
 app.get('/api/banlist', async (_req, res) => { try { const bans = normalizeArray(await readJson('bans.json', []), []); res.json(bans.map(({ hwid, ip, nick, id, data }) => ({ hwid, ip, nick, id, data }))); } catch (e) { jsonError(res, e); } });
 app.post('/api/log', async (req, res) => {
   try {
     const data = req.body || {};
-    const logs = normalizeArray(await readJson('logs.json', []), []);
-    const bans = normalizeArray(await readJson('bans.json', []), []);
+    const [logs, bans, keys] = await Promise.all([
+      readJson('logs.json', []),
+      readJson('bans.json', []),
+      readJson('keys.json', {})
+    ]);
+    const normalizedLogs = normalizeArray(logs, []);
+    const normalizedBans = normalizeArray(bans, []);
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
-    if (bans.some((ban) => (data.hwid && ban.hwid === data.hwid) || (data.nick && ban.nick === data.nick) || (ip && ban.ip === ip))) return res.status(403).json({ status: 'banido' });
+    if (normalizedBans.some((ban) => (data.hwid && ban.hwid === data.hwid) || (data.nick && ban.nick === data.nick) || (ip && ban.ip === ip))) return res.status(403).json({ status: 'banido' });
     const key = req.get('X-Loader-Key') || req.query.key;
-    if (key && !keyIsValid(key, await readJson('keys.json', {}))) return res.status(403).json({ error: 'key inválida ou expirada' });
-    logs.push({ ...data, ip, data: new Date().toLocaleDateString('pt-BR'), hora: new Date().toLocaleTimeString('pt-BR'), meta: { key: Boolean(key), user_agent: req.get('User-Agent') } });
-    await writeJson('logs.json', logs.slice(-5000));
+    if (key && !keyIsValid(key, keys)) return res.status(403).json({ error: 'key inválida ou expirada' });
+    normalizedLogs.push({ ...data, ip, data: new Date().toLocaleDateString('pt-BR'), hora: new Date().toLocaleTimeString('pt-BR'), meta: { key: Boolean(key), user_agent: req.get('User-Agent') } });
+    await writeJson('logs.json', normalizedLogs.slice(-5000));
     res.json({ status: 'registrado' });
   } catch (e) { jsonError(res, e); }
 });
