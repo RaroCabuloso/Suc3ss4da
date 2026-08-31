@@ -9,6 +9,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const configPath = path.join(__dirname, 'config.json');
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 const app = express();
+app.disable('x-powered-by');
+app.set('json spaces', 0);
 const PORT = Number(process.env.PORT || 3000);
 const STORAGE_URL = (config.APIFILE_URL || 'https://apifile.netlify.app').replace(/\/$/, '');
 const STORAGE_TOKEN = config.APIFILE_ADMIN_TOKEN;
@@ -299,6 +301,7 @@ app.get('/api/stats', auth, async (_req, res) => {
       keys: Object.keys(keys || {}).length
     });
   } catch (e) { jsonError(res, e); }
+});
 app.post('/api/admin/ban', auth, async (req, res) => { try { const bans = await readJson('bans.json', []); const entry = { ...req.body, data: new Date().toLocaleDateString('pt-BR'), hora: new Date().toLocaleTimeString('pt-BR') }; if (!bans.some((b) => ['hwid', 'ip', 'nick'].some((key) => entry[key] && b[key] === entry[key]))) await writeJson('bans.json', [...bans, entry]); res.json({ status: 'banido', entry }); } catch (e) { jsonError(res, e); } });
 app.post('/api/admin/unban', auth, async (req, res) => { try { const { hwid, ip, nick } = req.body || {}; const bans = await readJson('bans.json', []); await writeJson('bans.json', bans.filter((b) => !((hwid && b.hwid === hwid) || (ip && b.ip === ip) || (nick && b.nick === nick)))); res.json({ status: 'desbanido' }); } catch (e) { jsonError(res, e); } });
 app.get('/api/banlist', async (_req, res) => { try { const bans = normalizeArray(await readJson('bans.json', []), []); res.json(bans.map(({ hwid, ip, nick, id, data }) => ({ hwid, ip, nick, id, data }))); } catch (e) { jsonError(res, e); } });
