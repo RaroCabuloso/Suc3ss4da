@@ -148,6 +148,30 @@ end
 | `GET /api/key/validate/:key` | Valida uma key e incrementa os usos. |
 | `GET /api/banlist` | Consulta a lista publica de bans. |
 
+## Scripts Grandes (Chunking)
+
+O painel suporta scripts de **qualquer tamanho** através de chunking automático:
+
+- Scripts até **95KB** são salvos como um único arquivo
+- Scripts maiores são divididos em chunks de ~95KB cada
+- Ao ler, os chunks são combinados automaticamente
+- Suportado em: `/api/scripts`, `/api/loader/save`, `/api/raw/:id`
+
+**Exemplo**: Um script de 5MB será dividido em ~53 chunks, cada um enviado separadamente para evitar limites de payload. Você não precisa fazer nada - é totalmente transparente!
+
+### Limite máximo
+
+- Máximo 10.000 chunks por arquivo (~950MB teórico)
+- Limite prático é a capacidade da API de armazenamento
+
+### Como usar scripts grandes
+
+1. **No painel admin**: Cole o código (sem limites) e clique em "Salvar"
+2. **Via API**: POST para `/api/scripts` com `{"titulo":"...", "codigo":"..."}` (sem limites de tamanho)
+3. **No Roblox**: Use a loadstring normalmente - o sistema carrega automaticamente
+
+Nenhuma configuração adicional é necessária. O chunking funciona transparentemente.
+
 ## Desenvolvimento local
 
 ```bash

@@ -19,7 +19,8 @@ const ADMIN_PASS = config.ADMIN_PASS || '199';
 const SESSION_SECRET = config.SESSION_SECRET || crypto.createHash('sha256').update(`${ADMIN_USER}:${ADMIN_PASS}`).digest('hex');
 const ROOT = '/suc3ss4da';
 const CACHE_TTL_MS = 2500;
-const CHUNK_SIZE_BYTES = 500000;
+const CHUNK_SIZE_BYTES = 95000;
+const MAX_CHUNKS = 10000;
 const cache = new Map();
 
 function cloneData(value) {
@@ -46,10 +47,11 @@ function setCachedValue(key, value, ttl = CACHE_TTL_MS) {
 export default app;
 
 app.use(cors());
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+app.use(express.json({ limit: '200mb' }));
+app.use(express.urlencoded({ extended: true, limit: '200mb' }));
 app.use((req, res, next) => {
   res.setHeader('X-Backend', 'Suc3ss4da');
+  res.setHeader('X-Chunk-Support', 'enabled');
   next();
 });
 
@@ -131,7 +133,7 @@ async function storageRequest(url, options = {}) {
   const response = await fetch(url, { ...options, headers });
   const text = await response.text();
   let body = text;
-  try { body = JSON.parse(text); } catch { /* conteúdo textual */ }
+  try { body = JSON.parse(text); } catch { }
   if (!response.ok) {
     const error = new Error(body?.error || `Storage API respondeu ${response.status}`);
     error.status = response.status;
@@ -206,48 +208,69 @@ async function writeText(name, content) {
   await ensureStorageRoot();
   const filePath = storagePath(name);
   await ensureParentFolder(filePath);
+  const contentSize = Buffer.byteLength(content, 'utf8');
 
-  if (Buffer.byteLength(content, 'utf8') <= CHUNK_SIZE_BYTES) {
+  if (contentSize <= CHUNK_SIZE_BYTES) {
     try {
       await storageRequest(externalUrl(filePath), { method: 'PUT', body: JSON.stringify({ content }), headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
       if (error.status !== 404) throw error;
       await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }), headers: { 'Content-Type': 'application/json' } });
     }
+    setCachedValue(`text:${name}`, content, CACHE_TTL_MS * 6);
     return;
   }
 
   const parts = [];
-  for (let index = 0; index < content.length; index += CHUNK_SIZE_BYTES) {
-    const chunk = content.slice(index, index + CHUNK_SIZE_BYTES);
-    const partPath = `${name}.part${String(parts.length).padStart(3, '0')}`;
-    parts.push(partPath);
-    const chunkFilePath = storagePath(partPath);
-    try {
-      await storageRequest(externalUrl(chunkFilePath), { method: 'PUT', body: JSON.stringify({ content: chunk }), headers: { 'Content-Type': 'application/json' } });
-    } catch (error) {
-      if (error.status !== 404) throw error;
-      await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(chunkFilePath), content: chunk }), headers: { 'Content-Type': 'application/json' } });
+  const numChunks = Math.ceil(content.length / CHUNK_SIZE_BYTES);
+  if (numChunks > MAX_CHUNKS) throw new Error(`Arquivo muito grande (${numChunks} chunks > ${MAX_CHUNKS})`);
+
+  for (let i = 0; i < numChunks; i++) {
+    const start = i * CHUNK_SIZE_BYTES;
+    const end = Math.min(start + CHUNK_SIZE_BYTES, content.length);
+    const chunk = content.slice(start, end);
+    const chunkName = `${name}.chunk${String(i).padStart(4, '0')}`;
+    parts.push(chunkName);
+    const chunkPath = storagePath(chunkName);
+    await ensureParentFolder(chunkPath);
+
+    let retries = 0;
+    while (retries < 3) {
+      try {
+        await storageRequest(externalUrl(chunkPath), { method: 'PUT', body: JSON.stringify({ content: chunk }), headers: { 'Content-Type': 'application/json' } });
+        break;
+      } catch (error) {
+        if (error.status === 404 && retries === 0) {
+          try {
+            await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(chunkPath), content: chunk }), headers: { 'Content-Type': 'application/json' } });
+            break;
+          } catch (e) {
+            retries++;
+            if (retries >= 3) throw e;
+            await new Promise(r => setTimeout(r, 300 * retries));
+          }
+        } else {
+          retries++;
+          if (retries >= 3) throw error;
+          await new Promise(r => setTimeout(r, 300 * retries));
+        }
+      }
     }
   }
 
-  const metaFilePath = storagePath(`${name}.parts.json`);
-  await storageRequest(externalUrl(metaFilePath), {
-    method: 'PUT',
-    body: JSON.stringify({ content: JSON.stringify({ parts }, null, 2) }),
-    headers: { 'Content-Type': 'application/json' }
-  }).catch((error) => {
+  const metaFilePath = storagePath(`${name}.meta.json`);
+  const metaContent = JSON.stringify({ parts, totalChunks: numChunks, createdAt: new Date().toISOString() }, null, 2);
+  try {
+    await storageRequest(externalUrl(metaFilePath), { method: 'PUT', body: JSON.stringify({ content: metaContent }), headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
     if (error.status !== 404) throw error;
-    return storageRequest(`${STORAGE_URL}/api/files/`, {
-      method: 'POST',
-      body: JSON.stringify({ path: bodyStoragePath(metaFilePath), content: JSON.stringify({ parts }, null, 2) }),
-      headers: { 'Content-Type': 'application/json' }
-    });
-  });
+    await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(metaFilePath), content: metaContent }), headers: { 'Content-Type': 'application/json' } });
+  }
 
   try {
     await storageRequest(externalUrl(filePath), { method: 'DELETE' }).catch(() => {});
-  } catch { /* ignore */ }
+  } catch { }
+  setCachedValue(`text:${name}`, content, CACHE_TTL_MS * 6);
 }
 
 async function readText(name) {
@@ -255,23 +278,46 @@ async function readText(name) {
   if (cachedText && Date.now() < cachedText.expiresAt) return cachedText.value;
 
   try {
-    const metaBody = await storageRequest(externalUrl(storagePath(`${name}.parts.json`)));
+    const metaBody = await storageRequest(externalUrl(storagePath(`${name}.meta.json`)));
     const metaPayload = unwrapStoragePayload(metaBody);
-    const meta = metaPayload && typeof metaPayload === 'object' && Array.isArray(metaPayload.parts) ? metaPayload : null;
-    if (meta) {
-      const text = (await Promise.all(meta.parts.map((partPath) => readText(partPath)))).join('');
-      cache.set(`text:${name}`, { value: text, expiresAt: Date.now() + CACHE_TTL_MS * 4 });
+    let meta;
+    if (typeof metaPayload === 'string') {
+      try { meta = JSON.parse(metaPayload); } catch { meta = null; }
+    } else if (metaPayload && typeof metaPayload === 'object') {
+      meta = metaPayload;
+    }
+
+    if (meta && Array.isArray(meta.parts) && meta.parts.length > 0) {
+      const chunkTexts = await Promise.all(meta.parts.map(async (chunkName) => {
+        try {
+          const chunkBody = await storageRequest(externalUrl(storagePath(chunkName)));
+          const chunkPayload = unwrapStoragePayload(chunkBody);
+          return typeof chunkPayload === 'string' ? chunkPayload : (chunkPayload?.content || '');
+        } catch (e) {
+          console.error(`Falha ao ler chunk ${chunkName}:`, e.message);
+          return '';
+        }
+      }));
+      const text = chunkTexts.join('');
+      cache.set(`text:${name}`, { value: text, expiresAt: Date.now() + CACHE_TTL_MS * 6 });
       return text;
     }
   } catch (error) {
-    if (error.status !== 404) throw error;
+    if (error.status !== 404) {
+      console.error(`Falha ao ler metadados ${name}:`, error.message);
+    }
   }
 
-  const body = await storageRequest(externalUrl(storagePath(name)));
-  const payload = unwrapStoragePayload(body);
-  const text = typeof payload === 'string' ? payload : (payload && typeof payload === 'object' && payload.content !== undefined ? String(payload.content) : '');
-  cache.set(`text:${name}`, { value: text, expiresAt: Date.now() + CACHE_TTL_MS * 4 });
-  return text;
+  try {
+    const body = await storageRequest(externalUrl(storagePath(name)));
+    const payload = unwrapStoragePayload(body);
+    const text = typeof payload === 'string' ? payload : (payload?.content || '');
+    cache.set(`text:${name}`, { value: text, expiresAt: Date.now() + CACHE_TTL_MS * 6 });
+    return text;
+  } catch (e) {
+    console.error(`Falha ao ler arquivo ${name}:`, e.message);
+    throw e;
+  }
 }
 
 function now() { return new Date().toISOString(); }
