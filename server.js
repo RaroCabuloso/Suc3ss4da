@@ -19,6 +19,7 @@ const ADMIN_PASS = config.ADMIN_PASS || '199';
 const SESSION_SECRET = config.SESSION_SECRET || crypto.createHash('sha256').update(`${ADMIN_USER}:${ADMIN_PASS}`).digest('hex');
 const ROOT = '/suc3ss4da';
 const CACHE_TTL_MS = 2500;
+const CHUNK_SIZE_BYTES = 500000;
 const cache = new Map();
 
 function cloneData(value) {
@@ -45,7 +46,8 @@ function setCachedValue(key, value, ttl = CACHE_TTL_MS) {
 export default app;
 
 app.use(cors());
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 app.use((req, res, next) => {
   res.setHeader('X-Backend', 'Suc3ss4da');
   next();
@@ -77,8 +79,13 @@ function safeName(value) {
 }
 
 function storagePath(name) {
-  if (!safeName(name)) throw new Error('nome de arquivo inválido');
-  return `${ROOT}/${name}`;
+  const normalized = String(name || '').replace(/^\/+/, '').split('/').filter(Boolean);
+  if (!normalized.length) throw new Error('nome de arquivo inválido');
+  const validSegments = normalized.map((segment) => {
+    if (!safeName(segment)) throw new Error('nome de arquivo inválido');
+    return segment;
+  });
+  return `${ROOT}/${validSegments.join('/')}`;
 }
 
 function normalizeStoragePath(filePath) {
@@ -117,10 +124,11 @@ function externalUrl(filePath) {
 
 async function storageRequest(url, options = {}) {
   if (!STORAGE_TOKEN) throw new Error('APIFILE_ADMIN_TOKEN não configurado');
-  const response = await fetch(url, {
-    ...options,
-    headers: { Authorization: `Bearer ${STORAGE_TOKEN}`, ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) }
-  });
+  const headers = { Authorization: `Bearer ${STORAGE_TOKEN}`, ...(options.headers || {}) };
+  if (options.body && !headers['Content-Type'] && !headers['content-type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const response = await fetch(url, { ...options, headers });
   const text = await response.text();
   let body = text;
   try { body = JSON.parse(text); } catch { /* conteúdo textual */ }
@@ -184,34 +192,86 @@ async function writeJson(name, value) {
   const content = JSON.stringify(value, null, 2);
   const safeValue = cloneData(value);
   try {
-    await storageRequest(externalUrl(filePath), { method: 'PUT', body: JSON.stringify({ content }) });
+    await storageRequest(externalUrl(filePath), { method: 'PUT', body: JSON.stringify({ content }), headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     if (error.status !== 404) throw error;
-    await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }) });
+    await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }), headers: { 'Content-Type': 'application/json' } });
   }
   setCachedValue(name, safeValue, CACHE_TTL_MS * 6);
   return safeValue;
 }
 
+async function writeText(name, content) {
+  if (typeof content !== 'string') content = String(content ?? '');
+  await ensureStorageRoot();
+  const filePath = storagePath(name);
+  await ensureParentFolder(filePath);
+
+  if (Buffer.byteLength(content, 'utf8') <= CHUNK_SIZE_BYTES) {
+    try {
+      await storageRequest(externalUrl(filePath), { method: 'PUT', body: JSON.stringify({ content }), headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }), headers: { 'Content-Type': 'application/json' } });
+    }
+    return;
+  }
+
+  const parts = [];
+  for (let index = 0; index < content.length; index += CHUNK_SIZE_BYTES) {
+    const chunk = content.slice(index, index + CHUNK_SIZE_BYTES);
+    const partPath = `${name}.part${String(parts.length).padStart(3, '0')}`;
+    parts.push(partPath);
+    const chunkFilePath = storagePath(partPath);
+    try {
+      await storageRequest(externalUrl(chunkFilePath), { method: 'PUT', body: JSON.stringify({ content: chunk }), headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(chunkFilePath), content: chunk }), headers: { 'Content-Type': 'application/json' } });
+    }
+  }
+
+  const metaFilePath = storagePath(`${name}.parts.json`);
+  await storageRequest(externalUrl(metaFilePath), {
+    method: 'PUT',
+    body: JSON.stringify({ content: JSON.stringify({ parts }, null, 2) }),
+    headers: { 'Content-Type': 'application/json' }
+  }).catch((error) => {
+    if (error.status !== 404) throw error;
+    return storageRequest(`${STORAGE_URL}/api/files/`, {
+      method: 'POST',
+      body: JSON.stringify({ path: bodyStoragePath(metaFilePath), content: JSON.stringify({ parts }, null, 2) }),
+      headers: { 'Content-Type': 'application/json' }
+    });
+  });
+
+  try {
+    await storageRequest(externalUrl(filePath), { method: 'DELETE' }).catch(() => {});
+  } catch { /* ignore */ }
+}
+
 async function readText(name) {
   const cachedText = cache.get(`text:${name}`);
   if (cachedText && Date.now() < cachedText.expiresAt) return cachedText.value;
+
+  try {
+    const metaBody = await storageRequest(externalUrl(storagePath(`${name}.parts.json`)));
+    const metaPayload = unwrapStoragePayload(metaBody);
+    const meta = metaPayload && typeof metaPayload === 'object' && Array.isArray(metaPayload.parts) ? metaPayload : null;
+    if (meta) {
+      const text = (await Promise.all(meta.parts.map((partPath) => readText(partPath)))).join('');
+      cache.set(`text:${name}`, { value: text, expiresAt: Date.now() + CACHE_TTL_MS * 4 });
+      return text;
+    }
+  } catch (error) {
+    if (error.status !== 404) throw error;
+  }
+
   const body = await storageRequest(externalUrl(storagePath(name)));
   const payload = unwrapStoragePayload(body);
   const text = typeof payload === 'string' ? payload : (payload && typeof payload === 'object' && payload.content !== undefined ? String(payload.content) : '');
   cache.set(`text:${name}`, { value: text, expiresAt: Date.now() + CACHE_TTL_MS * 4 });
   return text;
-}
-
-async function writeText(name, content) {
-  await ensureStorageRoot();
-  const filePath = storagePath(name);
-  try {
-    await storageRequest(externalUrl(filePath), { method: 'PUT', body: JSON.stringify({ content }) });
-  } catch (error) {
-    if (error.status !== 404) throw error;
-    await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }) });
-  }
 }
 
 function now() { return new Date().toISOString(); }
@@ -332,10 +392,61 @@ function collectionRoutes(collection, idKey = 'id') {
   app.delete(`/api/${collection}/:id`, auth, requireName, async (req, res) => { try { const list = normalizeArray(await readJson(`${collection}.json`, []), []); const next = list.filter((value) => String(value[idKey]) !== req.params.id); if (next.length === list.length) return res.status(404).json({ error: 'não encontrado' }); await writeJson(`${collection}.json`, next); res.json({ status: 'deletado' }); } catch (e) { jsonError(res, e); } });
 }
 collectionRoutes('produtos');
-collectionRoutes('scripts');
+
+async function getScriptEntry(id) {
+  const list = normalizeArray(await readJson('scripts.json', []), []);
+  const record = list.find((item) => String(item.id) === String(id));
+  if (!record) return null;
+  if (typeof record.codigo === 'string') return record;
+  const fileCode = await readText(`scripts/${safeName(String(id))}.lua`).catch(() => '');
+  return fileCode ? { ...record, codigo: fileCode } : record;
+}
+
+app.post('/api/scripts', auth, async (req, res) => {
+  try {
+    const list = normalizeArray(await readJson('scripts.json', []), []);
+    const item = { ...req.body, id: req.body.id || crypto.randomUUID().replaceAll('-', ''), criado: now(), atualizado: now() };
+    const codigo = typeof item.codigo === 'string' ? item.codigo : '';
+    const stored = { ...item, codigo: undefined };
+    await writeText(`scripts/${safeName(String(item.id))}.lua`, codigo);
+    await writeJson('scripts.json', [...list.filter((value) => String(value.id) !== String(item.id)), stored]);
+    res.json({ status: 'criado', script: { ...stored, codigo } });
+  } catch (e) { jsonError(res, e); }
+});
+app.get('/api/scripts/:id', auth, requireName, async (req, res) => {
+  try {
+    const script = await getScriptEntry(req.params.id);
+    script ? res.json(script) : res.status(404).json({ error: 'não encontrado' });
+  } catch (e) { jsonError(res, e); }
+});
+app.put('/api/scripts/:id', auth, requireName, async (req, res) => {
+  try {
+    const list = normalizeArray(await readJson('scripts.json', []), []);
+    const index = list.findIndex((value) => String(value.id) === req.params.id);
+    if (index < 0) return res.status(404).json({ error: 'não encontrado' });
+    const existing = list[index];
+    const codigo = typeof req.body?.codigo === 'string' ? req.body.codigo : (await readText(`scripts/${safeName(String(req.params.id))}.lua`).catch(() => ''));
+    const updated = { ...existing, ...req.body, id: req.params.id, atualizado: now() };
+    await writeText(`scripts/${safeName(String(req.params.id))}.lua`, codigo);
+    const stored = { ...updated, codigo: undefined };
+    list[index] = stored;
+    await writeJson('scripts.json', list);
+    res.json({ status: 'atualizado', script: { ...stored, codigo } });
+  } catch (e) { jsonError(res, e); }
+});
+app.delete('/api/scripts/:id', auth, requireName, async (req, res) => {
+  try {
+    const list = normalizeArray(await readJson('scripts.json', []), []);
+    const next = list.filter((value) => String(value.id) !== req.params.id);
+    if (next.length === list.length) return res.status(404).json({ error: 'não encontrado' });
+    await writeText(`scripts/${safeName(String(req.params.id))}.lua`, '').catch(() => {});
+    await writeJson('scripts.json', next);
+    res.json({ status: 'deletado' });
+  } catch (e) { jsonError(res, e); }
+});
 app.get('/api/scripts', auth, async (_req, res) => { try { const scripts = normalizeArray(await readJson('scripts.json', []), []); res.json(scripts.map(({ id, titulo, criado, atualizado }) => ({ id, titulo, criado, atualizado }))); } catch (e) { jsonError(res, e); } });
 
-app.get('/api/raw/:id', async (req, res) => { if (!req.get('User-Agent')?.toLowerCase().includes('roblox') && !req.get('X-Roblox-UserId')) return res.status(403).send('403 Forbidden'); try { const scripts = normalizeArray(await readJson('scripts.json', []), []); const script = scripts.find((item) => item.id === req.params.id); if (!script) return res.status(404).send('-- not found'); res.type('text/plain').send(`local Maker = "Suc3ss4da"\nprint("by Suc3ss4da")\n\n${script.codigo || ''}`); } catch (e) { jsonError(res, e); } });
+app.get('/api/raw/:id', async (req, res) => { if (!req.get('User-Agent')?.toLowerCase().includes('roblox') && !req.get('X-Roblox-UserId')) return res.status(403).send('403 Forbidden'); try { const script = await getScriptEntry(req.params.id); if (!script) return res.status(404).send('-- not found'); const codigo = typeof script.codigo === 'string' ? script.codigo : ''; res.type('text/plain').send(`local Maker = "Suc3ss4da"\nprint("by Suc3ss4da")\n\n${codigo}`); } catch (e) { jsonError(res, e); } });
 
 app.get('/api/loader/list', auth, async (_req, res) => { try { res.json(normalizeArray(await readJson('loader-index.json', []), [])); } catch (e) { jsonError(res, e); } });
 app.post('/api/loader/save', auth, async (req, res) => { try { const { id, content } = req.body || {}; if (!safeName(id) || content === undefined) return res.status(400).json({ error: 'missing id or content' }); await writeText(`loader-${id}.txt`, content); const list = normalizeArray(await readJson('loader-index.json', []), []); const item = { id, size: Buffer.byteLength(content), modified: new Date().toLocaleString('pt-BR') }; await writeJson('loader-index.json', [...list.filter((v) => v.id !== id), item]); res.json({ status: 'ok', path: id }); } catch (e) { jsonError(res, e); } });
