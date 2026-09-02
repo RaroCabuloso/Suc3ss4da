@@ -3,5 +3,5 @@
   "ADMIN_PASS": "199",
   "SESSION_SECRET": "suc3ss4da-session-secret-change-this",
   "APIFILE_URL": "https://apifile.netlify.app",
-  "APIFILE_ADMIN_TOKEN": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InJhcm8iLCJpYXQiOjE3ODgyNjEzNTAsImV4cCI6MTc4ODM0Nzc1MH0.oZVHa3N8beKPiV6SHQnLgxnhVnaMTZL5tM3hwi-AUOg"
+  "APIFILE_ADMIN_TOKEN": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InJhcm8iLCJpYXQiOjE3ODgzOTI1MzQsImV4cCI6MTc4ODQ3ODkzNH0.k3sFYbVnsL1PN0sDXZuZ1pjryqycr1ttFooLbKc-jR8"
 }
