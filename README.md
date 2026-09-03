@@ -14,6 +14,8 @@ O painel usa apenas as rotas internas `/api/...`. O token da API de arquivos fic
 local API_URL = "https://suc3ss4da.vercel.app"
 ```
 
+O token da API de arquivos e renovado automaticamente cinco minutos antes de expirar. Configure `APIFILE_REFRESH_TOKEN` nas variaveis de ambiente da Vercel e, se o provedor usar outra rota, `APIFILE_REFRESH_URL`. O endpoint de renovacao deve aceitar `POST` com `refresh_token` e retornar `access_token` ou `token`. Sem um refresh token fornecido pelo servico de arquivos, nao existe como gerar uma nova key com seguranca.
+
 O login administrativo dura 30 dias e fica armazenado no dispositivo pelo navegador. Se o segredo de sessao for alterado, sera necessario entrar novamente.
 
 ## Scripts Roblox

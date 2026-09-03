@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 
@@ -13,7 +14,9 @@ app.disable('x-powered-by');
 app.set('json spaces', 0);
 const PORT = Number(process.env.PORT || 3000);
 const STORAGE_URL = (config.APIFILE_URL || 'https://apifile.netlify.app').replace(/\/$/, '');
-const STORAGE_TOKEN = config.APIFILE_ADMIN_TOKEN;
+const STORAGE_REFRESH_URL = process.env.APIFILE_REFRESH_URL || config.APIFILE_REFRESH_URL || `${STORAGE_URL}/api/auth/refresh`;
+let storageToken = process.env.APIFILE_ADMIN_TOKEN || config.APIFILE_ADMIN_TOKEN;
+let storageRefreshPromise;
 const ADMIN_USER = config.ADMIN_USER || '1v99ByRaro';
 const ADMIN_PASS = config.ADMIN_PASS || '199';
 const SESSION_SECRET = config.SESSION_SECRET || crypto.createHash('sha256').update(`${ADMIN_USER}:${ADMIN_PASS}`).digest('hex');
@@ -124,13 +127,51 @@ function externalUrl(filePath) {
   return `${STORAGE_URL}/api/files/${normalized.split('/').map(encodeURIComponent).join('/')}`;
 }
 
-async function storageRequest(url, options = {}) {
-  if (!STORAGE_TOKEN) throw new Error('APIFILE_ADMIN_TOKEN não configurado');
-  const headers = { Authorization: `Bearer ${STORAGE_TOKEN}`, ...(options.headers || {}) };
+function jwtExpiresAt(token) {
+  try {
+    const payload = token?.split('.')[1];
+    return payload ? Number(JSON.parse(Buffer.from(payload, 'base64url').toString()).exp) * 1000 : 0;
+  } catch { return 0; }
+}
+
+async function refreshStorageToken(force = false) {
+  if (!force && storageToken && jwtExpiresAt(storageToken) > Date.now() + 5 * 60 * 1000) return storageToken;
+  if (storageRefreshPromise) return storageRefreshPromise;
+  const refreshToken = process.env.APIFILE_REFRESH_TOKEN || config.APIFILE_REFRESH_TOKEN;
+  if (!refreshToken) {
+    throw new Error('APIFILE_ADMIN_TOKEN expirado. Configure APIFILE_REFRESH_TOKEN para renovar automaticamente.');
+  }
+
+  storageRefreshPromise = (async () => {
+    const response = await fetch(STORAGE_REFRESH_URL, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${refreshToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken })
+    });
+    const text = await response.text();
+    let body = text;
+    try { body = JSON.parse(text); } catch { }
+    const nextToken = body?.access_token || body?.token || body?.data?.access_token || body?.data?.token;
+    if (!response.ok || !nextToken) {
+      throw new Error(body?.error || `Não foi possível renovar a key da API (${response.status})`);
+    }
+    storageToken = nextToken;
+    return storageToken;
+  })();
+  try { return await storageRefreshPromise; } finally { storageRefreshPromise = undefined; }
+}
+
+async function storageRequest(url, options = {}, hasRetried = false) {
+  const activeToken = await refreshStorageToken();
+  const headers = { Authorization: `Bearer ${activeToken}`, ...(options.headers || {}) };
   if (options.body && !headers['Content-Type'] && !headers['content-type']) {
     headers['Content-Type'] = 'application/json';
   }
   const response = await fetch(url, { ...options, headers });
+  if ((response.status === 401 || response.status === 403) && !hasRetried && (process.env.APIFILE_REFRESH_TOKEN || config.APIFILE_REFRESH_TOKEN)) {
+    await refreshStorageToken(true);
+    return storageRequest(url, options, true);
+  }
   const text = await response.text();
   let body = text;
   try { body = JSON.parse(text); } catch { }
