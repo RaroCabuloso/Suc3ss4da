@@ -184,7 +184,7 @@ async function storageRequest(url, options = {}, hasRetried = false) {
 }
 
 async function ensureStorageRoot() {
-  if (!STORAGE_TOKEN) return;
+  if (!storageToken && !(process.env.APIFILE_REFRESH_TOKEN || config.APIFILE_REFRESH_TOKEN)) return;
   try {
     await storageRequest(`${STORAGE_URL}/api/folders/${encodeURIComponent(ROOT.replace(/^\//, ''))}`, { method: 'GET' });
   } catch (error) {
