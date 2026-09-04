@@ -15,6 +15,7 @@ app.set('json spaces', 0);
 const PORT = Number(process.env.PORT || 3000);
 const STORAGE_URL = (config.APIFILE_URL || 'https://apifile.netlify.app').replace(/\/$/, '');
 const STORAGE_REFRESH_URL = process.env.APIFILE_REFRESH_URL || config.APIFILE_REFRESH_URL || `${STORAGE_URL}/api/auth/refresh`;
+const STORAGE_LOGIN_URL = process.env.APIFILE_LOGIN_URL || config.APIFILE_LOGIN_URL || `${STORAGE_URL}/api/auth/login`;
 let storageToken = process.env.APIFILE_ADMIN_TOKEN || config.APIFILE_ADMIN_TOKEN;
 let storageRefreshPromise;
 const ADMIN_USER = config.ADMIN_USER || '1v99ByRaro';
@@ -138,21 +139,25 @@ async function refreshStorageToken(force = false) {
   if (!force && storageToken && jwtExpiresAt(storageToken) > Date.now() + 5 * 60 * 1000) return storageToken;
   if (storageRefreshPromise) return storageRefreshPromise;
   const refreshToken = process.env.APIFILE_REFRESH_TOKEN || config.APIFILE_REFRESH_TOKEN;
-  if (!refreshToken) {
-    throw new Error('APIFILE_ADMIN_TOKEN expirado. Configure APIFILE_REFRESH_TOKEN para renovar automaticamente.');
+  const username = process.env.APIFILE_USERNAME || config.APIFILE_USERNAME;
+  const password = process.env.APIFILE_PASSWORD || config.APIFILE_PASSWORD;
+  if (!refreshToken && (!username || !password)) {
+    throw new Error('APIFILE_ADMIN_TOKEN expirado. Configure APIFILE_USERNAME/APIFILE_PASSWORD ou APIFILE_REFRESH_TOKEN.');
   }
 
   storageRefreshPromise = (async () => {
-    const response = await fetch(STORAGE_REFRESH_URL, {
+    const response = await fetch(refreshToken ? STORAGE_REFRESH_URL : STORAGE_LOGIN_URL, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${refreshToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken })
+      headers: refreshToken
+        ? { 'Authorization': `Bearer ${refreshToken}`, 'Content-Type': 'application/json' }
+        : { 'Content-Type': 'application/json' },
+      body: JSON.stringify(refreshToken ? { refresh_token: refreshToken } : { username, password })
     });
     const text = await response.text();
     let body = text;
     try { body = JSON.parse(text); } catch { }
     const nextToken = body?.access_token || body?.token || body?.data?.access_token || body?.data?.token;
-    if (!response.ok || !nextToken) {
+    if (!response.ok || body?.success === false || !nextToken) {
       throw new Error(body?.error || `Não foi possível renovar a key da API (${response.status})`);
     }
     storageToken = nextToken;
@@ -168,13 +173,15 @@ async function storageRequest(url, options = {}, hasRetried = false) {
     headers['Content-Type'] = 'application/json';
   }
   const response = await fetch(url, { ...options, headers });
-  if ((response.status === 401 || response.status === 403) && !hasRetried && (process.env.APIFILE_REFRESH_TOKEN || config.APIFILE_REFRESH_TOKEN)) {
-    await refreshStorageToken(true);
-    return storageRequest(url, options, true);
-  }
   const text = await response.text();
   let body = text;
   try { body = JSON.parse(text); } catch { }
+  const tokenRejected = typeof body?.error === 'string' && /token\s+inv[aá]lido|token\s+expired|expired\s+token/i.test(body.error);
+  const canRefresh = process.env.APIFILE_REFRESH_TOKEN || config.APIFILE_REFRESH_TOKEN || ((process.env.APIFILE_USERNAME || config.APIFILE_USERNAME) && (process.env.APIFILE_PASSWORD || config.APIFILE_PASSWORD));
+  if ((response.status === 401 || response.status === 403 || tokenRejected) && !hasRetried && canRefresh) {
+    await refreshStorageToken(true);
+    return storageRequest(url, options, true);
+  }
   if (!response.ok) {
     const error = new Error(body?.error || `Storage API respondeu ${response.status}`);
     error.status = response.status;
