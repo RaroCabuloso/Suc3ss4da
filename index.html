@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Suc3ss4da • Admin Panel</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/@phosphor-icons/web"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
@@ -282,6 +283,95 @@
   /* Animations */
   .fade-in { animation: fadeIn 0.5s ease-out; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* FiveM operations console theme */
+  :root{
+    --bg:#090a0c;
+    --glass:rgba(19,21,24,.88);
+    --border:rgba(255,255,255,.09);
+    --accent:#ff3b30;
+    --accent-glow:rgba(255,59,48,.28);
+    --muted:#858b94;
+    --text:#f2f3f4;
+    --success:#53e08b;
+    --danger:#ff4d5e;
+    --font:'DM Mono',monospace;
+    --display:'Barlow Condensed',sans-serif;
+    --glow:0 0 24px rgba(255,59,48,.13);
+  }
+  body{
+    background-color:var(--bg);
+    background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px),radial-gradient(circle at 78% 8%,rgba(255,59,48,.12),transparent 27%),radial-gradient(circle at 15% 90%,rgba(52,63,78,.16),transparent 30%);
+    background-size:32px 32px,32px 32px,auto,auto;
+  }
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;background:linear-gradient(115deg,transparent 0 48%,rgba(255,255,255,.018) 50%,transparent 52%);opacity:.6;z-index:-1}
+  .app{animation:appReveal .65s ease both}
+  .sidebar{background:rgba(11,12,14,.94);border-right:1px solid rgba(255,255,255,.1);padding:22px 14px}
+  .logo{font-family:var(--display);font-size:1.65rem;letter-spacing:1px;text-transform:uppercase;padding:0 12px 22px;margin-bottom:14px}
+  .logo{display:flex;align-items:center;gap:10px}
+  .logo img{width:32px;height:32px;display:block;object-fit:contain;filter:drop-shadow(0 0 12px var(--accent-glow))}
+  .logo span{color:var(--accent)}
+  .nav a{border-radius:5px;padding:12px 14px;position:relative;overflow:hidden}
+  .nav a::after{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--accent);transform:scaleY(0);transition:transform .25s}
+  .nav a.active{background:linear-gradient(90deg,rgba(255,59,48,.15),transparent);color:#fff;border-color:rgba(255,59,48,.18);box-shadow:none}
+  .nav a.active::after{transform:scaleY(1)}
+  .nav a:hover:not(.active){background:rgba(255,255,255,.055);transform:translateX(3px)}
+  .main{padding:34px 42px}
+  .topbar{margin-bottom:32px;border-bottom:1px solid var(--border);padding-bottom:20px}
+  .page-title,.modal-title,.login-brand h2,.login-form h3{font-family:var(--display);letter-spacing:.5px;text-transform:uppercase}
+  .page-title{font-size:2.15rem;line-height:1}
+  .page-sub{font-size:.72rem;letter-spacing:.7px;text-transform:uppercase;margin-top:8px}
+  .status-badge{border-radius:3px;padding:7px 11px;color:var(--success);border-color:rgba(83,224,139,.25);background:rgba(83,224,139,.07)}
+  .card{border-radius:7px;background:linear-gradient(145deg,rgba(27,30,34,.92),rgba(14,16,18,.9));border-color:rgba(255,255,255,.1);padding:22px;box-shadow:0 18px 40px rgba(0,0,0,.2);position:relative;overflow:hidden}
+  .card::before{content:"";position:absolute;inset:0 0 auto;height:1px;background:linear-gradient(90deg,var(--accent),transparent 48%);opacity:.55}
+  .card:hover{border-color:rgba(255,59,48,.3);transform:translateY(-2px);transition:transform .25s,border-color .25s}
+  .card-title{color:#aeb3ba;font-size:.68rem;letter-spacing:2px}
+  .big-num{font-family:var(--display);font-size:2.7rem;letter-spacing:1px}
+  .btn{border-radius:4px;border-color:rgba(255,255,255,.14);padding:10px 16px;text-transform:uppercase;font-size:.69rem;letter-spacing:.8px}
+  .btn.primary{background:var(--accent);box-shadow:0 8px 20px rgba(255,59,48,.14)}
+  .btn:hover{background:#fff;color:#111;box-shadow:0 8px 22px rgba(255,255,255,.12)}
+  .btn.primary:hover{background:#ff6259;color:#fff}
+  .form-row input,.form-row textarea,.form-row select,.search-bar input{border-radius:4px;background:rgba(0,0,0,.22);border-color:rgba(255,255,255,.12)}
+  .table-container{border-radius:6px}
+  .card.table-container{padding:0;background:rgba(10,12,14,.7);box-shadow:none}
+  .card:has(.card-header){background:rgba(17,19,22,.72);box-shadow:none}
+  .card:has(.card-header)::before{opacity:.28}
+  .raw-card,.log-card,.product-card{border-radius:6px;background:rgba(19,21,24,.86);border-color:rgba(255,255,255,.1)}
+  .raw-card{animation:slideIn .45s ease both}
+  .raw-card:nth-child(2){animation-delay:.07s}.raw-card:nth-child(3){animation-delay:.14s}.raw-card:nth-child(4){animation-delay:.21s}
+  .modal-back{background:rgba(3,4,5,.88)}
+  .modal{border-radius:7px;background:#15181b;border-color:rgba(255,255,255,.14);box-shadow:0 30px 100px rgba(0,0,0,.7)}
+  #loginPage{min-height:calc(100vh - 70px);padding:30px 0}
+  #loginPage::before{width:700px;height:700px;border-color:rgba(255,59,48,.16);box-shadow:0 0 0 44px rgba(255,59,48,.025),0 0 0 88px rgba(255,59,48,.018);animation:loginOrbit 24s linear infinite}
+  #loginPage::after{background:linear-gradient(90deg,transparent,rgba(255,59,48,.08),transparent)}
+  .login-shell{max-width:930px;border-radius:8px;border-color:rgba(255,255,255,.14);background:rgba(13,15,17,.92);box-shadow:0 32px 100px rgba(0,0,0,.68);overflow:hidden}
+  .login-brand{min-height:490px;padding:54px 52px;border-right-color:rgba(255,255,255,.1);background:linear-gradient(145deg,rgba(255,59,48,.13),transparent 48%),repeating-linear-gradient(135deg,transparent 0 18px,rgba(255,255,255,.018) 19px 20px)}
+  .login-emblem{width:88px;height:88px;display:grid;place-items:center;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);clip-path:polygon(0 0,100% 0,100% 72%,72% 100%,0 100%);box-shadow:0 14px 34px rgba(255,59,48,.18);animation:emblemIn .8s cubic-bezier(.2,.8,.2,1) both}
+  .login-emblem img{width:68px;height:68px;object-fit:contain;filter:drop-shadow(0 0 16px rgba(255,59,48,.3))}
+  .login-kicker{font-weight:600;letter-spacing:2.5px}
+  .login-kicker::before{background:var(--accent);box-shadow:0 0 14px var(--accent)}
+  .login-brand h2{font-size:clamp(3.6rem,7vw,6.5rem);line-height:.82;letter-spacing:1px;margin:28px 0 20px;max-width:360px;text-shadow:10px 10px 0 rgba(255,59,48,.09)}
+  .login-brand p{font-size:.75rem;line-height:1.9}
+  .login-mark{border-left:2px solid var(--accent);padding-left:10px}
+  .login-form{padding:54px 52px;background:rgba(255,255,255,.018)}
+  .login-form h3{font-size:1.6rem}
+  .login-form .login-caption{font-size:.7rem;margin-bottom:32px}
+  .login-field input{border-radius:4px!important;background:rgba(0,0,0,.28)!important;border-color:rgba(255,255,255,.13)!important}
+  .login-field input:focus{border-color:var(--accent)!important;box-shadow:0 0 0 3px rgba(255,59,48,.1)!important}
+  .login-field input:focus + i{color:var(--accent)}
+  .login-submit{height:52px;border-radius:4px;margin-top:12px}
+  .login-hint{letter-spacing:1px;text-transform:uppercase}
+  @keyframes appReveal{from{opacity:0}to{opacity:1}}
+  @keyframes emblemIn{from{opacity:0;transform:translateY(-12px) rotate(-8deg)}to{opacity:1;transform:translateY(0) rotate(0)}}
+  @keyframes slideIn{from{opacity:0;transform:translateX(-14px)}to{opacity:1;transform:translateX(0)}}
+  @media(max-width:900px){
+    .main{padding:24px;padding-top:88px}
+    .login-shell{grid-template-columns:1fr;max-width:560px}
+    .login-brand{min-height:280px;padding:38px 30px;border-right:0;border-bottom:1px solid var(--border)}
+    .login-brand h2{font-size:4.3rem;margin:20px 0 14px}
+    .login-form{padding:34px 30px}
+  }
+  @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
 </style>
 </head>
 <body>
@@ -313,7 +403,7 @@
   </aside>
 
   <main class="main" id="main">
-    <div class="topbar fade-in">
+    <div class="topbar fade-in" id="topbar">
       <div>
         <h1 class="page-title" id="pageTitle">Dashboard</h1>
         <div class="page-sub" id="pageSub">Bem-vindo ao painel Suc3ss4da</div>
@@ -328,6 +418,7 @@
         <div class="login-shell">
           <div class="login-brand">
             <div>
+              <div class="login-emblem" aria-hidden="true"><span>S</span><i class="ph ph-waveform"></i></div>
               <div class="login-kicker">Sistema online</div>
               <h2>Suc3ss4da</h2>
               <p>Um espaço de controle para seus scripts, acessos e operações.</p>
@@ -571,6 +662,7 @@ function hideAllPages() { Object.values(pages).forEach(p => p && (p.style.displa
 function navigateTo(page) {
   if (page === 'login') {
     hideAllPages(); pages.login.style.display = 'block';
+    $('#topbar').style.display = 'none';
     $('#sidebar').style.display = 'none'; $('#mobileHeader').style.display = 'none';
     $$('#nav a').forEach(a => a.classList.remove('active'));
     return;
@@ -578,6 +670,7 @@ function navigateTo(page) {
   hideAllPages();
   if (!pages[page]) page = 'status';
   pages[page].style.display = 'block';
+  $('#topbar').style.display = 'flex';
   $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.page === page));
   $('#pageTitle').textContent = pageTitles[page] || 'Painel Admin';
   if (window.innerWidth <= 900) {
