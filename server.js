@@ -26,6 +26,7 @@ const CACHE_TTL_MS = 2500;
 const CHUNK_SIZE_BYTES = 95000;
 const MAX_CHUNKS = 10000;
 const cache = new Map();
+let scriptsMutationQueue = Promise.resolve();
 
 function cloneData(value) {
   if (value === null || value === undefined) return value;
@@ -46,6 +47,12 @@ function getCachedValue(key) {
 function setCachedValue(key, value, ttl = CACHE_TTL_MS) {
   cache.set(key, { value: cloneData(value), expiresAt: Date.now() + ttl });
   return cloneData(value);
+}
+
+function withScriptsMutation(operation) {
+  const result = scriptsMutationQueue.then(operation, operation);
+  scriptsMutationQueue = result.catch(() => {});
+  return result;
 }
 
 export default app;
@@ -265,6 +272,9 @@ async function writeText(name, content) {
       if (error.status !== 404) throw error;
       await storageRequest(`${STORAGE_URL}/api/files/`, { method: 'POST', body: JSON.stringify({ path: bodyStoragePath(filePath), content }), headers: { 'Content-Type': 'application/json' } });
     }
+    await storageRequest(externalUrl(storagePath(`${name}.meta.json`)), { method: 'DELETE' }).catch((error) => {
+      if (error.status !== 404) throw error;
+    });
     setCachedValue(`text:${name}`, content, CACHE_TTL_MS * 6);
     return;
   }
@@ -492,19 +502,25 @@ async function getScriptEntry(id) {
   const record = list.find((item) => String(item.id) === String(id));
   if (!record) return null;
   if (typeof record.codigo === 'string') return record;
-  const fileCode = await readText(`scripts/${safeName(String(id))}.lua`).catch(() => '');
+  const fileCode = await readText(`scripts/${id}.lua`).catch(() => '');
   return fileCode ? { ...record, codigo: fileCode } : record;
 }
 
 app.post('/api/scripts', auth, async (req, res) => {
   try {
-    const list = normalizeArray(await readJson('scripts.json', []), []);
-    const item = { ...req.body, id: req.body.id || crypto.randomUUID().replaceAll('-', ''), criado: now(), atualizado: now() };
-    const codigo = typeof item.codigo === 'string' ? item.codigo : '';
-    const stored = { ...item, codigo: undefined };
-    await writeText(`scripts/${safeName(String(item.id))}.lua`, codigo);
-    await writeJson('scripts.json', [...list.filter((value) => String(value.id) !== String(item.id)), stored]);
-    res.json({ status: 'criado', script: { ...stored, codigo } });
+    return await withScriptsMutation(async () => {
+      const list = normalizeArray(await readJson('scripts.json', []), []);
+      const requestedId = req.body?.id;
+      if (requestedId !== undefined && !safeName(requestedId)) return res.status(400).json({ error: 'id inválido' });
+      const id = requestedId || crypto.randomUUID().replaceAll('-', '');
+      if (list.some((value) => String(value.id) === String(id))) return res.status(409).json({ error: 'id já existe' });
+      const item = { ...req.body, id, criado: now(), atualizado: now() };
+      const codigo = typeof item.codigo === 'string' ? item.codigo : '';
+      const stored = { ...item, codigo: undefined };
+      await writeText(`scripts/${id}.lua`, codigo);
+      await writeJson('scripts.json', [...list, stored]);
+      res.json({ status: 'criado', script: { ...stored, codigo } });
+    });
   } catch (e) { jsonError(res, e); }
 });
 app.get('/api/scripts/:id', auth, requireName, async (req, res) => {
@@ -515,27 +531,31 @@ app.get('/api/scripts/:id', auth, requireName, async (req, res) => {
 });
 app.put('/api/scripts/:id', auth, requireName, async (req, res) => {
   try {
-    const list = normalizeArray(await readJson('scripts.json', []), []);
-    const index = list.findIndex((value) => String(value.id) === req.params.id);
-    if (index < 0) return res.status(404).json({ error: 'não encontrado' });
-    const existing = list[index];
-    const codigo = typeof req.body?.codigo === 'string' ? req.body.codigo : (await readText(`scripts/${safeName(String(req.params.id))}.lua`).catch(() => ''));
-    const updated = { ...existing, ...req.body, id: req.params.id, atualizado: now() };
-    await writeText(`scripts/${safeName(String(req.params.id))}.lua`, codigo);
-    const stored = { ...updated, codigo: undefined };
-    list[index] = stored;
-    await writeJson('scripts.json', list);
-    res.json({ status: 'atualizado', script: { ...stored, codigo } });
+    return await withScriptsMutation(async () => {
+      const list = normalizeArray(await readJson('scripts.json', []), []);
+      const index = list.findIndex((value) => String(value.id) === req.params.id);
+      if (index < 0) return res.status(404).json({ error: 'não encontrado' });
+      const existing = list[index];
+      const codigo = typeof req.body?.codigo === 'string' ? req.body.codigo : (await readText(`scripts/${req.params.id}.lua`).catch(() => ''));
+      const updated = { ...existing, ...req.body, id: req.params.id, atualizado: now() };
+      await writeText(`scripts/${req.params.id}.lua`, codigo);
+      const stored = { ...updated, codigo: undefined };
+      list[index] = stored;
+      await writeJson('scripts.json', list);
+      res.json({ status: 'atualizado', script: { ...stored, codigo } });
+    });
   } catch (e) { jsonError(res, e); }
 });
 app.delete('/api/scripts/:id', auth, requireName, async (req, res) => {
   try {
-    const list = normalizeArray(await readJson('scripts.json', []), []);
-    const next = list.filter((value) => String(value.id) !== req.params.id);
-    if (next.length === list.length) return res.status(404).json({ error: 'não encontrado' });
-    await writeText(`scripts/${safeName(String(req.params.id))}.lua`, '').catch(() => {});
-    await writeJson('scripts.json', next);
-    res.json({ status: 'deletado' });
+    return await withScriptsMutation(async () => {
+      const list = normalizeArray(await readJson('scripts.json', []), []);
+      const next = list.filter((value) => String(value.id) !== req.params.id);
+      if (next.length === list.length) return res.status(404).json({ error: 'não encontrado' });
+      await writeText(`scripts/${req.params.id}.lua`, '').catch(() => {});
+      await writeJson('scripts.json', next);
+      res.json({ status: 'deletado' });
+    });
   } catch (e) { jsonError(res, e); }
 });
 app.get('/api/scripts', auth, async (_req, res) => { try { const scripts = normalizeArray(await readJson('scripts.json', []), []); res.json(scripts.map(({ id, titulo, criado, atualizado }) => ({ id, titulo, criado, atualizado }))); } catch (e) { jsonError(res, e); } });
